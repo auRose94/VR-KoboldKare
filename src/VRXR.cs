@@ -603,8 +603,30 @@ namespace VRKoboldKare
 
         private void CreateHandTrackers()
         {
+            // Resolve the hand-tracking extension functions through
+            // xrGetInstanceProcAddr — the Khronos loader does not export
+            // extension symbols (56 core exports only; a DllImport here threw
+            // EntryPointNotFoundException and silently killed the fallback).
             lock (_xrLock)
             {
+                IntPtr pCreate = IntPtr.Zero, pLocate = IntPtr.Zero, pDestroy = IntPtr.Zero;
+                int r1 = XrApi.xrGetInstanceProcAddr(_instance, "xrCreateHandTrackerEXT", out pCreate);
+                int r2 = XrApi.xrGetInstanceProcAddr(_instance, "xrLocateHandJointsEXT", out pLocate);
+                int r3 = XrApi.xrGetInstanceProcAddr(_instance, "xrDestroyHandTrackerEXT", out pDestroy);
+                if (!XrResultCode.Ok(r1) || !XrResultCode.Ok(r2) || !XrResultCode.Ok(r3) ||
+                    pCreate == IntPtr.Zero || pLocate == IntPtr.Zero || pDestroy == IntPtr.Zero)
+                {
+                    Log("hand tracking proc resolution failed: create " + XrResultCode.Name(r1) +
+                        ", locate " + XrResultCode.Name(r2) + ", destroy " + XrResultCode.Name(r3));
+                    return;
+                }
+                var create = (XrApi.CreateHandTrackerEXT_t)Marshal.GetDelegateForFunctionPointer(
+                    pCreate, typeof(XrApi.CreateHandTrackerEXT_t));
+                var locate = (XrApi.LocateHandJointsEXT_t)Marshal.GetDelegateForFunctionPointer(
+                    pLocate, typeof(XrApi.LocateHandJointsEXT_t));
+                var destroy = (XrApi.DestroyHandTrackerEXT_t)Marshal.GetDelegateForFunctionPointer(
+                    pDestroy, typeof(XrApi.DestroyHandTrackerEXT_t));
+
                 var ciL = new XrHandTrackerCreateInfoEXT
                 {
                     type = XrType.HAND_TRACKER_CREATE_INFO_EXT,
@@ -617,12 +639,17 @@ namespace VRKoboldKare
                     hand = XrEnums.HAND_RIGHT_EXT,
                     handJointSet = 0,
                 };
-                int rl = XrApi.xrCreateHandTrackerEXT(_session, ref ciL, out _handTrackerL);
-                int rr = XrApi.xrCreateHandTrackerEXT(_session, ref ciR, out _handTrackerR);
+                int rl = create(_session, ref ciL, out _handTrackerL);
+                int rr = create(_session, ref ciR, out _handTrackerR);
                 if (!XrResultCode.Ok(rl) || !XrResultCode.Ok(rr))
+                {
                     Log("hand tracker creation failed: L " + XrResultCode.Name(rl) + ", R " + XrResultCode.Name(rr));
-                else
-                    Log("hand trackers created (XR_EXT_hand_tracking)");
+                    _handTrackerL = 0; _handTrackerR = 0;
+                    return;
+                }
+                _locateHandJoints = locate;
+                _destroyHandTracker = destroy;
+                Log("hand trackers created (XR_EXT_hand_tracking via proc-addr)");
             }
         }
 
@@ -1152,7 +1179,8 @@ namespace VRKoboldKare
                 jointCount = XrEnums.HAND_JOINT_COUNT_EXT,
                 joints = (IntPtr)joints,
             };
-            if (!XrResultCode.Ok(XrApi.xrLocateHandJointsEXT(tracker, ref li, ref locs))) return;
+            if (_locateHandJoints == null ||
+                !XrResultCode.Ok(_locateHandJoints(tracker, ref li, ref locs))) return;
 
             var palm = joints[(int)XrEnums.HAND_JOINT_PALM_EXT];
             uint want = XrEnums.SPACE_LOCATION_ORIENTATION_VALID_BIT | XrEnums.SPACE_LOCATION_POSITION_VALID_BIT;
@@ -1386,6 +1414,8 @@ namespace VRKoboldKare
         private bool _hasHandTracking;
         private ulong _handTrackerL, _handTrackerR;
         private float _pinchL, _pinchR, _gripL, _gripR;   // gesture hysteresis states
+        private XrApi.LocateHandJointsEXT_t _locateHandJoints;
+        private XrApi.DestroyHandTrackerEXT_t _destroyHandTracker;
 
         internal bool AcquireWaitAndCopyPrepare(ulong swapchain, out uint index)
         {
@@ -1466,8 +1496,8 @@ namespace VRKoboldKare
                 destroy(_viewSpace); destroy(_appSpace);
                 _spaceGripL = _spaceGripR = _spaceAimL = _spaceAimR = 0;
                 _viewSpace = _appSpace = 0;
-                if (_handTrackerL != 0) { XrApi.xrDestroyHandTrackerEXT(_handTrackerL); _handTrackerL = 0; }
-                if (_handTrackerR != 0) { XrApi.xrDestroyHandTrackerEXT(_handTrackerR); _handTrackerR = 0; }
+                if (_handTrackerL != 0 && _destroyHandTracker != null) { _destroyHandTracker(_handTrackerL); _handTrackerL = 0; }
+                if (_handTrackerR != 0 && _destroyHandTracker != null) { _destroyHandTracker(_handTrackerR); _handTrackerR = 0; }
                 _actions.Clear();
                 if (_actionSet != 0) { XrApi.xrDestroyActionSet(_actionSet); _actionSet = 0; }
             }

@@ -744,6 +744,13 @@ namespace VRKoboldKare
         [DllImport(Lib, CallingConvention = CC)]
         public static extern int xrDestroyInstance(ulong instance);
 
+        /// <summary>The spec-sanctioned way to obtain EXTENSION function
+        /// pointers — loaders are not required to export them (our 1.1.65
+        /// NuGet loader exports only the 56 core functions).</summary>
+        [DllImport(Lib, CallingConvention = CC)]
+        public static extern int xrGetInstanceProcAddr(
+            ulong instance, [MarshalAs(UnmanagedType.LPStr)] string name, out IntPtr proc);
+
         [DllImport(Lib, CallingConvention = CC)]
         public unsafe static extern int xrGetInstanceProperties(
             ulong instance, ref XrInstanceProperties properties);
@@ -903,18 +910,21 @@ namespace VRKoboldKare
             ulong swapchain, ref XrSwapchainImageReleaseInfo releaseInfo);
 
         // ---------- XR_EXT_hand_tracking ----------
+        // NOTE: resolved via xrGetInstanceProcAddr at runtime — the Khronos
+        // loader does NOT export extension functions (confirmed: 56 core
+        // exports only). A DllImport here throws EntryPointNotFoundException.
 
-        [DllImport(Lib, CallingConvention = CC)]
-        public static extern int xrCreateHandTrackerEXT(
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        public delegate int CreateHandTrackerEXT_t(
             ulong session, ref XrHandTrackerCreateInfoEXT createInfo, out ulong handTracker);
 
-        [DllImport(Lib, CallingConvention = CC)]
-        public static extern int xrDestroyHandTrackerEXT(ulong handTracker);
-
-        [DllImport(Lib, CallingConvention = CC)]
-        public unsafe static extern int xrLocateHandJointsEXT(
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        public delegate int LocateHandJointsEXT_t(
             ulong handTracker, ref XrHandJointsLocateInfoEXT locateInfo,
             ref XrHandJointLocationsEXT locations);
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        public delegate int DestroyHandTrackerEXT_t(ulong handTracker);
 
         [DllImport(Lib, CallingConvention = CC, CharSet = CharSet.Ansi)]
         public static extern int xrResultToString(ulong instance, int value, StringBuilder buffer);
