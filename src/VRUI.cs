@@ -110,11 +110,18 @@ namespace VRKoboldKare
                 var cam = Camera.main;
                 if (cam == null) return;
                 float virtualDist = 400f;
-                if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null)
-                    virtualDist = Mathf.Max(HudMath.MinVirtualDistance, _manager.Plugin.cfgHudDistance.Value);
+                float hudW = 900f, hudH = 600f;
+                if (!ReferenceEquals(_manager.Plugin, null))
+                {
+                    if (_manager.Plugin.cfgHudDistance != null)
+                        virtualDist = Mathf.Max(HudMath.MinVirtualDistance, _manager.Plugin.cfgHudDistance.Value);
+                    if (_manager.Plugin.cfgHudWidth != null) hudW = _manager.Plugin.cfgHudWidth.Value;
+                    if (_manager.Plugin.cfgHudHeight != null) hudH = _manager.Plugin.cfgHudHeight.Value;
+                }
                 c.planeDistance = HudMath.NearPlaneDistance;
-                c.scaleFactor = HudMath.HudScale(baseScale, VRRenderer.CurrentVFovDeg,
-                    cam.fieldOfView, virtualDist, 4f);
+                c.scaleFactor = HudMath.HudScaleFit(baseScale, VRRenderer.CurrentVFovDeg,
+                    cam.fieldOfView, virtualDist, 4f, hudW, hudH,
+                    VRRenderer.CurrentViewW, VRRenderer.CurrentViewH);
             }
             catch { }
         }

@@ -519,6 +519,16 @@ namespace VRKoboldKare
                 {
                     _lastLoggedState = sc.state;
                     Log("session state -> " + SessionStateName(sc.state));
+                    if (sc.state == XrEnums.SESSION_STATE_SYNCHRONIZED && _wasDisplayed)
+                    {
+                        _syncFlaps++;
+                        if (_syncFlaps == 8 || _syncFlaps == 30)
+                            Log("session dropped to SYNCHRONIZED " + _syncFlaps + "x — the compositor is " +
+                                "starving the app (frame budget) or the graphics stack is stale. " +
+                                "Known good fix: reboot the machine (driver/runtime state), or lower EyeScale.");
+                    }
+                    if (sc.state == XrEnums.SESSION_STATE_VISIBLE || sc.state == XrEnums.SESSION_STATE_FOCUSED)
+                        _wasDisplayed = true;
                 }
                 if (sc.state == XrEnums.SESSION_STATE_READY && !_sessionBegun)
                 {
@@ -1359,6 +1369,10 @@ namespace VRKoboldKare
                                System.Math.Max(1, FramesSubmitted - _lastMilestone);
                 Log("submitted " + FramesSubmitted + " frames total (avg " +
                     avgMs.ToString("0.0") + " ms/frame over the last stretch)");
+                if (avgMs > 25.0)
+                    Log("frame time over compositor budget — the headset may show black/nothing. " +
+                        "Known causes: stale graphics-stack state (fix: reboot), heavy EyeScale " +
+                        "(lower it), or a driver/runtime update mid-session.");
                 _lastMilestone = FramesSubmitted;
                 _submitWatch.Restart();
             }
@@ -1440,6 +1454,8 @@ namespace VRKoboldKare
         private int _acquireFailLog;
         private int _syncFailLog;
         private bool _hasHandTracking;
+        private int _syncFlaps;
+        private bool _wasDisplayed;
         private ulong _handTrackerL, _handTrackerR;
         private float _pinchL, _pinchR, _gripL, _gripR;   // gesture hysteresis states
         private XrApi.LocateHandJointsEXT_t _locateHandJoints;

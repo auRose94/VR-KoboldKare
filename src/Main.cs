@@ -80,6 +80,8 @@ namespace VRKoboldKare
         internal ConfigEntry<string>  cfgSnapRight;
         internal ConfigEntry<float>   cfgMouseSens;
         internal ConfigEntry<float>   cfgHudDistance;
+        internal ConfigEntry<float>   cfgHudWidth;
+        internal ConfigEntry<float>   cfgHudHeight;
         internal ConfigEntry<bool>    cfgOptionsMenuTab;
         internal ConfigEntry<string>  cfgRenderMode;
         internal ConfigEntry<float>   cfgEyeScale;
@@ -115,6 +117,10 @@ namespace VRKoboldKare
                 "Snap turn right key (Unity KeyCode name).");
             cfgMouseSens = Config.Bind("VR.Locomotion", "MouseYawSensitivity", 0.15f,
                 "Degrees of view yaw per mouse pixel while VR is on (seated fallback rotation).");
+            cfgHudWidth = Config.Bind("VR.UI", "HudWidth", 900f,
+                "Virtual-pixel width of the UI panel in the headset view — the HUD scales to fit inside it (with HudHeight). Shrink both to tighten the UI toward the center.");
+            cfgHudHeight = Config.Bind("VR.UI", "HudHeight", 600f,
+                "Virtual-pixel height of the UI panel in the headset view.");
             cfgHudDistance = Config.Bind("VR.UI", "HudDistance", 400f,
                 "Plane distance for game HUD/menus converted into the headset view. Push back if the UI is too close.");
             cfgOptionsMenuTab = Config.Bind("VR.UI", "OptionsMenuTab", true,

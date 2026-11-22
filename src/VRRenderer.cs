@@ -275,6 +275,8 @@ namespace VRKoboldKare
         /// compensation reads this (converted canvases keep desktop-FOV sizing
         /// while the VR projection is far wider).</summary>
         internal static float CurrentVFovDeg = 60f;
+        internal static float CurrentViewW = 3096f;
+        internal static float CurrentViewH = 3242f;
 
         /// <summary>One symmetric FOV covering both eyes' asymmetric bounds.</summary>
         private XrFovf SymmetricFov()
@@ -392,6 +394,8 @@ namespace VRKoboldKare
                 _monoFov = SymmetricFov();
                 const float rad2degF = 57.29578f;
                 CurrentVFovDeg = (_monoFov.angleUp - _monoFov.angleDown) * rad2degF;
+                CurrentViewW = _eyeW[0];
+                CurrentViewH = _eyeH[0];
                 if (_gameCam != null)
                 {
                     // Re-poll the head at THIS frame's predicted display time

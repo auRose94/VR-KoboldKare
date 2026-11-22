@@ -676,7 +676,13 @@ namespace VRKoboldKare
             float viewYaw = YawOffset + headRot.eulerAngles.y;
             Quaternion yawRot = Quaternion.Euler(0f, Mathf.DeltaAngle(_anchorViewYaw, viewYaw), 0f);
             Vector3 rel = hmdLocal - _hmdAnchorXZ;   // Y stays absolute (STAGE is floor-origin)
-            return bodyPos + yawRot * rel;
+            // The OFFSET vector is in OpenXR STAGE axes (-Z forward) — it must
+            // go through the same Z-flip as positions before a Unity
+            // quaternion can rotate it. Without the flip, a physical lean maps
+            // sideways once mouse yaw rotates it (the "lean forward = lean
+            // right" bug: backward-rotated by the accumulated mouse yaw).
+            Vector3 relUnity = new Vector3(rel.x, rel.y, -rel.z);
+            return bodyPos + yawRot * relUnity;
         }
 
         private void CaptureWorldOffset(Vector3 hmdLocal, Quaternion headRot)
