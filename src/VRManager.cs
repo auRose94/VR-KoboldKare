@@ -46,7 +46,7 @@ namespace VRKoboldKare
         // the body contribution (the spectate mod parks the body elsewhere).
         private Vector3 _hmdAnchorXZ;    // tracking-space head XZ at capture
         private Vector3 _anchorBodyPos;  // body world pos at capture
-        private float _anchorViewYaw;    // view yaw (head + offset) at capture
+        private float _anchorHeadYaw;    // HEAD yaw (no mouse layer) at capture
         private float _yawOffset;        // mouse/snap-turn layer (seated play)
         private bool _offsetCaptured = false;
 
@@ -424,10 +424,25 @@ namespace VRKoboldKare
             }
         }
 
+        private CameraSwitcher.CameraMode? _preGhostMode;
+
         private void EnterGhostMode()
         {
             GhostModeActive = true;
             if (Input != null) Input.ResetGrabState();
+            // Free the game camera: FreeCam mode stops the orbit from fighting
+            // the ghost rig, and the game's own head-hiding state machine
+            // shows the full avatar (she's a spirit now — she WANTS to see
+            // herself drift).
+            try
+            {
+                if (CamSwitcher != null)
+                {
+                    _preGhostMode = CamSwitcher.GetCameraMode();
+                    CamSwitcher.SwitchCamera(CameraSwitcher.CameraMode.FreeCam);
+                }
+            }
+            catch (Exception) { }
             string eater = "";
             try
             {
@@ -444,6 +459,15 @@ namespace VRKoboldKare
         {
             GhostModeActive = false;
             SetExternalSpectateCamera(false);
+            // Back to first person — the game's own state machine (and our
+            // mirror patch) re-take the camera from the revived body.
+            try
+            {
+                if (CamSwitcher != null)
+                    CamSwitcher.SwitchCamera(_preGhostMode ?? CameraSwitcher.CameraMode.FirstPerson);
+            }
+            catch (Exception) { }
+            _preGhostMode = null;
             _offsetCaptured = false;   // re-anchor to the revived body (one snap)
             Log("GHOST: back in your body — view re-anchored.");
         }
@@ -601,7 +625,11 @@ namespace VRKoboldKare
                 var cam = Camera.main;
                 Transform head = FindHeadBone();
                 if (cam == null || head == null) return;
-                bool near = (cam.transform.position - head.position).sqrMagnitude < 0.36f;   // <0.6m
+                // Hide ONLY in mirrored first person with the camera inside
+                // the skull. Third-person stations / free cam / ghost mode are
+                // avatar-spectacle situations — the head stays on.
+                bool fp = Cam != null && Cam.MirrorEnabled;
+                bool near = fp && (cam.transform.position - head.position).sqrMagnitude < 0.36f;   // <0.6m
                 if (near == _headHidden) return;
                 foreach (var r in _headRenderers) if (r != null) { try { r.enabled = !near; } catch { } }
                 _headHidden = near;
@@ -673,8 +701,10 @@ namespace VRKoboldKare
                 catch { }
             }
 
-            float viewYaw = YawOffset + headRot.eulerAngles.y;
-            Quaternion yawRot = Quaternion.Euler(0f, Mathf.DeltaAngle(_anchorViewYaw, viewYaw), 0f);
+            // The rig yaw tracks the HEAD (no mouse layer): mouse/snap turns
+            // rotate the world around a stationary pivot — the seated-VR model
+            // — so physical leans stay view-relative at any virtual heading.
+            Quaternion yawRot = Quaternion.Euler(0f, Mathf.DeltaAngle(_anchorHeadYaw, headRot.eulerAngles.y), 0f);
             Vector3 rel = hmdLocal - _hmdAnchorXZ;   // Y stays absolute (STAGE is floor-origin)
             // The OFFSET vector is in OpenXR STAGE axes (-Z forward) — it must
             // go through the same Z-flip as positions before a Unity
@@ -688,7 +718,7 @@ namespace VRKoboldKare
         private void CaptureWorldOffset(Vector3 hmdLocal, Quaternion headRot)
         {
             _hmdAnchorXZ = new Vector3(hmdLocal.x, 0f, hmdLocal.z);
-            _anchorViewYaw = YawOffset + headRot.eulerAngles.y;
+            _anchorHeadYaw = headRot.eulerAngles.y;
             _anchorBodyPos = Vector3.zero;
             try
             {

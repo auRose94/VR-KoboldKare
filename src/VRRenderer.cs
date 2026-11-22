@@ -403,8 +403,12 @@ namespace VRKoboldKare
                     // LateUpdate with last frame's poll — a 1-frame pose/
                     // content lag reads as "looking over your shoulder".
                     var fresh = VRXR.Poll();
-                    if (fresh.valid && fresh.headTracked)
+                    if (fresh.valid && fresh.headTracked && _m.Cam != null && _m.Cam.MirrorEnabled)
                     {
+                        // Head-locked snap ONLY in mirrored first person. When
+                        // the game switches to third person (stations,
+                        // animations) or free cam, its own orbit drives —
+                        // that's the spectate view she described.
                         _gameCam.transform.position = _m.HeadToWorld(fresh.headPos, fresh.headRot);
                         _gameCam.transform.rotation = Quaternion.Euler(0f, _m.YawOffset, 0f) * fresh.headRot;
                     }

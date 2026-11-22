@@ -296,7 +296,8 @@ namespace VRKoboldKare
         {
             try
             {
-                if (e.ChangedSetting.Definition.Key == "HudDistance")
+                var key = e.ChangedSetting.Definition.Key;
+                if (key == "HudDistance" || key == "HudWidth" || key == "HudHeight")
                 {
                     var mgr = VRManager;
                     mgr?.UI?.ReapplyHudScale();
