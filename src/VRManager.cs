@@ -819,6 +819,7 @@ namespace VRKoboldKare
             Renderer.Initialize(this);
 
             gameObject.AddComponent<VRGhostHud>();
+            gameObject.AddComponent<VRBody>();
 
             VRPatches.EnsurePatched(this);
         }

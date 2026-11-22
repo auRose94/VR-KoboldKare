@@ -82,6 +82,9 @@ namespace VRKoboldKare
         internal ConfigEntry<float>   cfgHudDistance;
         internal ConfigEntry<float>   cfgHudWidth;
         internal ConfigEntry<float>   cfgHudHeight;
+        internal ConfigEntry<float>   cfgBodyFollowXZ;
+        internal ConfigEntry<float>   cfgBodyFollowY;
+        internal ConfigEntry<float>   cfgBodyMaxOffset;
         internal ConfigEntry<bool>    cfgOptionsMenuTab;
         internal ConfigEntry<string>  cfgRenderMode;
         internal ConfigEntry<float>   cfgEyeScale;
@@ -123,6 +126,12 @@ namespace VRKoboldKare
                 "Virtual-pixel height of the UI panel in the headset view.");
             cfgHudDistance = Config.Bind("VR.UI", "HudDistance", 3f,
                 "Distance (meters) of the HUD/chat panels in front of the headset. Raise to shrink the UI angular size, lower to enlarge.");
+            cfgBodyFollowXZ = Config.Bind("VR.Body", "BodyFollowXZ", 0.5f,
+                "EXPERIMENTAL: fraction of the camera's horizontal lean/walk offset that the avatar's hips follow (post-animation, visual only). 0 = off.");
+            cfgBodyFollowY = Config.Bind("VR.Body", "BodyFollowY", 0.4f,
+                "EXPERIMENTAL: fraction of the camera height the avatar's hips keep above the floor (physical crouch = kobold crouch).");
+            cfgBodyMaxOffset = Config.Bind("VR.Body", "BodyMaxOffset", 1.0f,
+                "Max horizontal hips offset in meters (clamps the visual lean).");
             cfgOptionsMenuTab = Config.Bind("VR.UI", "OptionsMenuTab", true,
                 "Add 'KK VR' tabs to the game's options menu (main menu + in-game pause), driven by the game's own settings framework. Edits apply live and write to this config file.");
             cfgLocoSmoothSpeed = Config.Bind("VR.Locomotion", "SmoothSpeed", 2.0f,
