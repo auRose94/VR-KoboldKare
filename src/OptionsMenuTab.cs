@@ -409,6 +409,32 @@ namespace VRKoboldKare
                     RegisterProxy(group, opt, entry);
                 }
             }
+
+            // Forensics for the "tabs injected but not visible" investigation:
+            // dump what actually landed in the panels.
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append("ButtonPanel children now:");
+                for (int i = 0; i < buttonPanel.childCount; i++)
+                {
+                    var b = buttonPanel.GetChild(i);
+                    var btn = b.GetComponent<Button>();
+                    sb.Append(" [").Append(b.name)
+                      .Append(b.gameObject.activeInHierarchy ? "" : " (inactive)")
+                      .Append(btn != null && btn.isActiveAndEnabled ? "" : " (btn disabled)")
+                      .Append("]");
+                }
+                VRKoboldKarePlugin.Log.LogInfo(sb.ToString());
+                foreach (var tab in Tabs)
+                {
+                    var v = FindChild(panel, "View - " + tab[0]);
+                    if (v != null)
+                        VRKoboldKarePlugin.Log.LogInfo("View - " + tab[0] + ": active=" +
+                            v.gameObject.activeInHierarchy + ", spawner rows=" + v.GetComponentInChildren<ScriptableSettingSpawner>(true).transform.childCount);
+                }
+            }
+            catch (Exception ex) { VRKoboldKarePlugin.Log.LogWarning("menu dump failed: " + ex.Message); }
         }
 
         // Destroy the rows the game's own spawner spawned into the cloned view
