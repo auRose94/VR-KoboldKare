@@ -297,27 +297,75 @@ namespace VRKoboldKare
             Plugin = plugin;
         }
 
+        private static bool _openStateDumped;
+
         // Cheap poll from the persistent manager's update loop: build once the
         // menu prefab and the SettingsManager singleton exist (a few seconds
         // after boot — works on the main menu, before any world load).
         internal static void Tick()
         {
-            if (_built || _failed) return;
-            var cfg = !ReferenceEquals(Plugin, null) ? Plugin.cfgOptionsMenuTab : null;
-            if (cfg != null && !cfg.Value) { _built = true; return; }
-            if (++_throttle % 30 != 0) return; // ~every 0.5s
+            if (!_built || _failed)
+            {
+                var cfg = !ReferenceEquals(Plugin, null) ? Plugin.cfgOptionsMenuTab : null;
+                if (cfg != null && !cfg.Value) { _built = true; return; }
+                if (++_throttle % 30 != 0) return; // ~every 0.5s
+                try
+                {
+                    var menu = UnityEngine.Object.FindObjectOfType<MainMenu>();
+                    if (menu == null) return;
+                    Build(menu);
+                    _built = true;
+                    try { VRKoboldKarePlugin.Log.LogInfo("options menu: KK VR tabs injected"); } catch (Exception) { }
+                }
+                catch (Exception e)
+                {
+                    _failed = true; // one honest attempt — the config file remains the surface
+                    try { VRKoboldKarePlugin.Log.LogWarning("options menu injection failed: " + e.Message); } catch (Exception) { }
+                }
+                return;
+            }
+
+            // OPEN-STATE FORENSICS: when the game's own tabs are visible (the
+            // user opened Options), dump every tab button's state — the cloned
+            // KK VR buttons exist in the closed-state dump, so the question is
+            // what differs when the panel is actually shown (active state,
+            // position off-screen, zero size).
+            if (_openStateDumped) return;
             try
             {
                 var menu = UnityEngine.Object.FindObjectOfType<MainMenu>();
                 if (menu == null) return;
-                Build(menu);
-                _built = true;
-                try { VRKoboldKarePlugin.Log.LogInfo("options menu: KK VR tabs injected"); } catch (Exception) { }
+                var optionsRoot = FindChild(menu.transform, "View - Options");
+                var body = optionsRoot != null ? FindChild(optionsRoot, "Body") : null;
+                var bp = body != null ? FindChild(body, "ButtonPanel") : null;
+                if (bp == null) return;
+                Transform gp = null;
+                for (int i = 0; i < bp.childCount; i++)
+                    if (bp.GetChild(i).name == "Button - Gameplay") { gp = bp.GetChild(i); break; }
+                if (gp == null || !gp.gameObject.activeInHierarchy) return;   // menu still closed
+
+                _openStateDumped = true;
+                var sb = new System.Text.StringBuilder("options open — ButtonPanel state:");
+                for (int i = 0; i < bp.childCount; i++)
+                {
+                    var b = bp.GetChild(i);
+                    var rt = b.GetComponent<RectTransform>();
+                    sb.Append(" [").Append(b.name)
+                      .Append(" self=").Append(b.gameObject.activeSelf ? 1 : 0)
+                      .Append(" hier=").Append(b.gameObject.activeInHierarchy ? 1 : 0);
+                    if (rt != null)
+                        sb.Append(" pos=(").Append(rt.anchoredPosition.x.ToString("0"))
+                          .Append(",").Append(rt.anchoredPosition.y.ToString("0"))
+                          .Append(") size=(").Append(rt.rect.width.ToString("0"))
+                          .Append("x").Append(rt.rect.height.ToString("0")).Append(")");
+                    sb.Append("]");
+                }
+                VRKoboldKarePlugin.Log.LogInfo(sb.ToString());
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                _failed = true; // one honest attempt — the config file remains the surface
-                try { VRKoboldKarePlugin.Log.LogWarning("options menu injection failed: " + e.Message); } catch (Exception) { }
+                _openStateDumped = true;
+                try { VRKoboldKarePlugin.Log.LogWarning("open-state dump failed: " + ex.Message); } catch (Exception) { }
             }
         }
 
