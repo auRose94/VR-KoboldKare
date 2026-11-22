@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Mono
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-complete
+
+      # The pure-C# suites (xrabi: OpenXR ABI regression; math: aim
+      # convention, pose conversion, HUD scale) compile and run with no game
+      # install. This is the gate: a red suite fails the build.
+      - name: Run unit tests
+        run: ./run_tests.sh
+
+      - name: Build script sanity
+        run: bash -n build.sh
+
+  # The plugin cannot be compiled on CI: BepInEx + UnityEngine + Assembly-CSharp
+  # + Photon are game-provided and not redistributable. check_build.sh therefore
+  # SKIPs here and runs where a game install exists. What CI can still do is
+  # parse every source file and fail on syntax errors.
+  syntax:
+    name: Source syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Mono
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-complete
+
+      - name: Parse all C# sources (syntax only)
+        run: ./check_syntax.sh
+
+      - name: Full compile (skips without a game install)
+        run: ./check_build.sh
+
+      - name: Every src file is reachable from the build
+        run: |
+          # build.sh compiles src/*.cs, so a file in a subdirectory would be
+          # silently excluded from the DLL.
+          stray=$(find src -name '*.cs' -mindepth 2 | head -20)
+          if [ -n "$stray" ]; then
+            echo "::error::C# files in src/ subdirectories are NOT compiled by build.sh:"
+            echo "$stray"
+            exit 1
+          fi
+          echo "OK: $(find src -maxdepth 1 -name '*.cs' | wc -l) source files, all in src/"

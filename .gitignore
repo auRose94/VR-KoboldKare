@@ -1,0 +1,15 @@
+# Build artifacts
+VRKoboldKare.dll
+*.pdb
+dist/
+stage/
+.bepinex-cache/
+
+# Editor/OS noise
+*.user
+.vs/
+.idea/
+.DS_Store
+
+# Session/scratch
+*.zcode-session
