@@ -59,6 +59,98 @@ namespace VRKoboldKare
         private float _nextCanvasScan;
         private const float NearPlaneDistance = 15f;
 
+        // ---- UI overlay layer ----
+        // Converted canvases go on a dedicated layer rendered by a URP OVERLAY
+        // camera with cleared depth — they draw OVER the world instead of
+        // depth-testing against it (the "clips into floor/mountains" bug).
+        private Camera _uiOverlayCam;
+        private Camera _baseCam;
+        private int _uiLayer = -1;
+        private bool _uiLayerReady;
+
+        private void EnsureUiLayer()
+        {
+            if (_uiLayerReady) return;
+            try
+            {
+                var cam = Camera.main;
+                if (cam == null) return;
+                _baseCam = cam;
+
+                // Layer 23 is unused in KoboldKare's TagManager (verified
+                // against the project source) — the dedicated UI overlay layer.
+                _uiLayer = 23;
+                cam.cullingMask &= ~(1 << _uiLayer);   // the base never draws the UI (no depth occlusion)
+
+                var go = new GameObject("VRKK_UICam");
+                _uiOverlayCam = go.AddComponent<Camera>();
+                _uiOverlayCam.enabled = false;          // driven by the base's camera stack
+                _uiOverlayCam.cullingMask = 1 << _uiLayer;
+                _uiOverlayCam.nearClipPlane = 0.01f;
+                _uiOverlayCam.farClipPlane = 1000f;
+                _uiOverlayCam.stereoTargetEye = StereoTargetEyeMask.None;
+                go.transform.SetParent(cam.transform, false);
+
+                var data = go.GetComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>()
+                          ?? go.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+                data.renderType = UnityEngine.Rendering.Universal.CameraRenderType.Overlay;
+                data.renderShadows = false;
+                data.requiresDepthOption = UnityEngine.Rendering.Universal.CameraOverrideOption.Off;
+                data.requiresColorOption = UnityEngine.Rendering.Universal.CameraOverrideOption.Off;
+                // clearDepth is get-only in this URP build — write the backing
+                // field so the overlay clears depth and draws OVER the world.
+                try
+                {
+                    var cdFi = typeof(UnityEngine.Rendering.Universal.UniversalAdditionalCameraData)
+                        .GetField("m_ClearDepth", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    cdFi?.SetValue(data, true);
+                }
+                catch (Exception) { }
+                data.renderShadows = false;
+                data.requiresDepthOption = UnityEngine.Rendering.Universal.CameraOverrideOption.Off;
+                data.requiresColorOption = UnityEngine.Rendering.Universal.CameraOverrideOption.Off;
+
+                var baseData = cam.GetComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+                if (baseData == null) baseData = cam.gameObject.AddComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
+                if (baseData.renderType != UnityEngine.Rendering.Universal.CameraRenderType.Base)
+                    baseData.renderType = UnityEngine.Rendering.Universal.CameraRenderType.Base;
+                baseData.cameraStack.Add(_uiOverlayCam);
+
+                _uiLayerReady = true;
+                try { VRKoboldKarePlugin.Log.LogInfo("VR: UI overlay layer " + _uiLayer + " armed (draws over the world)"); } catch (Exception) { }
+            }
+            catch (Exception e)
+            {
+                try { VRKoboldKarePlugin.Log.LogWarning("VR: UI overlay layer failed: " + e.Message); } catch (Exception) { }
+                _uiLayerReady = true;   // don't retry every frame
+                _uiLayer = -1;
+            }
+        }
+
+        /// <summary>The dedicated UI layer bit (for excluding it from world cameras).</summary>
+        internal int UiLayer => _uiLayer;
+
+        private void SyncOverlayProjection()
+        {
+            try
+            {
+                if (_uiOverlayCam != null && _baseCam != null)
+                {
+                    _uiOverlayCam.transform.position = _baseCam.transform.position;
+                    _uiOverlayCam.transform.rotation = _baseCam.transform.rotation;
+                    _uiOverlayCam.projectionMatrix = _baseCam.projectionMatrix;
+                }
+            }
+            catch { }
+        }
+
+        private void SetLayerRecursively(GameObject go, int layer)
+        {
+            go.layer = layer;
+            foreach (Transform child in go.transform)
+                SetLayerRecursively(child.gameObject, layer);
+        }
+
         /// <summary>
         /// Screen Space - Overlay canvases draw to the BACKBUFFER only — they
         /// never appear in the headset. Convert them to Screen Space - Camera
@@ -84,8 +176,10 @@ namespace VRKoboldKare
                 _canvasOverrides.Add(overrideRec);
                 try
                 {
-                    c.worldCamera = cam;
-                    c.renderMode = RenderMode.ScreenSpaceCamera;
+                    EnsureUiLayer();
+                    if (_uiLayer > 0) SetLayerRecursively(c.gameObject, _uiLayer);
+                    c.renderMode = RenderMode.WorldSpace;
+                    c.worldCamera = null;
                     ApplyHudTransform(overrideRec);
                 }
                 catch { }
@@ -167,6 +261,8 @@ namespace VRKoboldKare
                 _nextCanvasScan = Time.unscaledTime + 2f;
                 ScanCanvases();
             }
+
+            SyncOverlayProjection();
 
             var input = _manager.Input;
             if (input == null || !input.FrameValid || !input.Frame.headTracked) return;
@@ -250,6 +346,7 @@ namespace VRKoboldKare
 
         private void CreateCanvas()
         {
+            EnsureUiLayer();
             _canvasRoot = new GameObject("VRKK_UICanvas");
             DontDestroyOnLoad(_canvasRoot);
             _canvas = _canvasRoot.AddComponent<Canvas>();
@@ -261,6 +358,7 @@ namespace VRKoboldKare
             // 400x80) — at scale 1 that's a 400-METER plane in front of your
             // face. 0.0005 brings a 400-unit panel down to 0.2m.
             rect.localScale = new Vector3(0.0005f, 0.0005f, 0.0005f);
+            if (_uiLayer > 0) SetLayerRecursively(_canvasRoot, _uiLayer);
         }
 
         private void CreatePrompt()

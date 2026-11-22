@@ -336,6 +336,9 @@ namespace VRKoboldKare
             {
                 if (c == null) continue;
                 c.cullingMask = main.cullingMask;
+                // The dedicated UI layer renders via the overlay camera only.
+                var ui = _m != null && _m.UI != null ? _m.UI.UiLayer : -1;
+                if (ui > 0) c.cullingMask &= ~(1 << ui);
                 c.clearFlags = main.clearFlags;
                 c.backgroundColor = main.backgroundColor;
                 c.farClipPlane = main.farClipPlane;
