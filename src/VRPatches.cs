@@ -31,6 +31,7 @@ namespace VRKoboldKare
                 Patch_PlayerProcessing();
                 Patch_OrbitCameraLateUpdate();
                 Patch_OrbitCameraIntentSetter();
+                Patch_SetEyeDir();
                 Patch_UserSortGrabbables();
                 Patch_GrabberLateUpdate();
                 if (VRKoboldKarePlugin.Log != null)
@@ -189,6 +190,15 @@ namespace VRKoboldKare
 
         private static bool _intentPrefixLogged;
 
+        // STATIC target (no __instance available). While VR is enabled, _aim
+        // belongs to SetOrbitAim alone: KK-LLM-NPC's eye animator feeds the
+        // local player's direction here every frame via SetEyeDir —
+        // body-relative, no mouse layer — and overwriting with it was the
+        // "held objects stuck north / mouse can't move them" bug (the aimW
+        // forensics caught aim.x = head yaw with the mouse offset stripped).
+        // The eyeDir bookkeeping is handled by the SetEyeDir patch below; the
+        // desktop path still fixes the shipped bug (quaternion components
+        // written as degrees) with real Euler angles.
         private static bool OrbitCameraIntentSetter_Prefix(Vector3 dir)
         {
             try
@@ -199,6 +209,9 @@ namespace VRKoboldKare
                     if (VRKoboldKarePlugin.Log != null)
                         VRKoboldKarePlugin.Log.LogInfo("VR: intent setter patch intercepting (game bug bypassed)");
                 }
+                var mgr = VRKoboldKarePlugin.VRManager;
+                if (mgr != null && mgr.Enabled) return false;   // VR owns _aim
+
                 if (dir.sqrMagnitude < 0.0001f) return false;
                 Vector3 n = dir.normalized;
                 if (Mathf.Abs(n.y) > 0.999f) return true;   // near-vertical: skip (rare)
@@ -221,6 +234,64 @@ namespace VRKoboldKare
             catch
             {
                 return true;    // on any surprise, let the original run
+            }
+        }
+
+        // ------------------------------------------------------------------
+        //  Patch — CharacterDescriptor.SetEyeDir (instance method).
+        //  The eye animator feeds the LOCAL PLAYER's descriptor every frame;
+        //  the original forwards that to the intent setter. While VR is on we
+        //  keep eyeDir bookkeeping (NPC vision reads it) but block the intent
+        //  write — the animated eye direction must not fight the head-locked
+        //  aim. AI kobolds pass through untouched.
+        // ------------------------------------------------------------------
+
+        private static System.Reflection.FieldInfo _eyeDirFi;
+        private static bool _setEyeDirLogged;
+
+        private static void Patch_SetEyeDir()
+        {
+            var m = typeof(CharacterDescriptor).GetMethod("SetEyeDir",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (m == null) return;
+            _harmony.Patch(m,
+                prefix: new HarmonyMethod(typeof(VRPatches), nameof(SetEyeDir_Prefix)));
+        }
+
+        private static bool SetEyeDir_Prefix(CharacterDescriptor __instance, Vector3 dir)
+        {
+            try
+            {
+                var mgr = VRKoboldKarePlugin.VRManager;
+                if (mgr == null || !mgr.Enabled) return true;   // desktop: original behavior
+
+                var kob = mgr.Kobold;
+                bool isLocal = false;
+                try { isLocal = kob != null && __instance == kob.GetComponent<CharacterDescriptor>(); } catch (Exception) { }
+                if (!isLocal) return true;   // AI kobolds: original behavior
+
+                if (!_setEyeDirLogged)
+                {
+                    _setEyeDirLogged = true;
+                    if (VRKoboldKarePlugin.Log != null)
+                        VRKoboldKarePlugin.Log.LogInfo("VR: SetEyeDir intercepted for the local player — intent owned by the headset");
+                }
+
+                // Keep eyeDir fresh for the NPC vision systems; block the
+                // intent write (the original would call the setter).
+                try
+                {
+                    if (_eyeDirFi == null)
+                        _eyeDirFi = typeof(CharacterDescriptor).GetField("eyeDir",
+                            BindingFlags.NonPublic | BindingFlags.Instance);
+                    _eyeDirFi?.SetValue(__instance, dir);
+                }
+                catch (Exception) { }
+                return false;
+            }
+            catch
+            {
+                return true;
             }
         }
 
