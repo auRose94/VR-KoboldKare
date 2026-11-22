@@ -297,6 +297,157 @@ namespace VRKoboldKare
             Plugin = plugin;
         }
 
+        private static void Log(string msg)
+        {
+            try { VRKoboldKarePlugin.Log.LogInfo("VR: " + msg); } catch (Exception) { }
+        }
+
+        // THE MOD DOCTOR (menu no-show, ported from KK-LLM-NPC v1.13.1): runs
+        // when the Options screen is actually OPEN (MainMenu.GetCurrentMode is
+        // a public static — ShowMenu proved unreliable to patch), when rects
+        // are laid out for real. Dumps the live layout, flows EVERY modded
+        // button (ours AND KK-LLM-NPC's — both stacked invisibly behind
+        // Graphics) into 78px slots below Multiplayer, disables the panel's
+        // dead layout group, and expands the ButtonPanel downward-only to fit
+        // (boot-time sizeDelta lied; the BG sibling paints the backdrop and
+        // must stretch too). Idempotent — measures live on every open.
+        private static bool _wasOptions;
+        private static FieldInfo _mmInstanceF;
+
+        private static void PollOpenMenu()
+        {
+            bool isOpen;
+            try { isOpen = MainMenu.GetCurrentMode() == MainMenu.MainMenuMode.Options; }
+            catch (Exception) { return; } // boot race: singleton not up yet — retried next tick
+            try
+            {
+                if (!isOpen) { _wasOptions = false; return; }
+                if (_wasOptions) return; // once per open
+                _wasOptions = true;
+                if (_mmInstanceF == null)
+                    _mmInstanceF = typeof(MainMenu).GetField("instance",
+                        BindingFlags.NonPublic | BindingFlags.Static);
+                var menu = _mmInstanceF != null ? _mmInstanceF.GetValue(null) as MainMenu : null;
+                if (menu == null) { Log("options-dump: MainMenu instance not reachable"); return; }
+                var optionsRoot = FindChild(menu.transform, "View - Options");
+                if (optionsRoot == null) { Log("options-dump: View - Options NOT FOUND"); return; }
+                var body = FindChild(optionsRoot, "Body");
+                var bp = body != null ? FindChild(body, "ButtonPanel") : null;
+                if (bp == null) { Log("options-dump: ButtonPanel NOT FOUND"); return; }
+                try { RelayoutModdedButtons(bp); } catch (Exception re) { Log("options-relayout failed: " + re); }
+                try { FitButtonPanel(bp); } catch (Exception fe) { Log("options-fit failed hard: " + fe); }
+            }
+            catch (Exception e)
+            {
+                Log("options-dump failed: " + e);
+            }
+        }
+
+        // The game's six canonical category buttons — everything else in the
+        // ButtonPanel is mod-injected (ours, the VR rig's, future mods').
+        private const float ModSlotHeight = 78f;   // the game's own button grid spacing
+
+        private static readonly string[] GameButtonNames =
+        {
+            "Button - Gameplay", "Button - Controls", "Button - Audio",
+            "Button - Graphics", "Button - Analytics", "Button - Multiplayer",
+        };
+
+        // RELAYOUT: the ButtonPanel has NO functioning runtime layout group —
+        // clones spawn at the template's position and stack invisibly behind
+        // Graphics. Re-flow every MODDED button (ours AND KK-LLM-NPC's,
+        // name-sorted, deterministic) into 78px slots below the last game
+        // button, then the fit expands the panel downward-only to cover them.
+        private static void RelayoutModdedButtons(Transform bp)
+        {
+            var rt = bp as RectTransform;
+            if (rt == null) return;
+            var lg = rt.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
+            if (lg != null && lg.enabled)
+            {
+                lg.enabled = false;
+                Log("options-relayout: disabled the panel's VerticalLayoutGroup (it was not laying out at runtime anyway)");
+            }
+            Transform anchor = null;
+            var modded = new List<RectTransform>();
+            for (int i = 0; i < bp.childCount; i++)
+            {
+                var c = bp.GetChild(i);
+                bool game = false;
+                foreach (var g in GameButtonNames) if (c.name == g) { game = true; break; }
+                if (game) { if (c.name == GameButtonNames[GameButtonNames.Length - 1]) anchor = c; continue; }
+                var crt = c as RectTransform;
+                if (crt != null && c.GetComponent<Button>() != null) modded.Add(crt);
+            }
+            if (anchor == null) { Log("options-relayout: no game anchor button found — skipped"); return; }
+            if (modded.Count == 0) return;
+            modded.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
+            var art = (RectTransform)anchor;
+            float x = art.anchoredPosition.x;
+            for (int i = 0; i < modded.Count; i++)
+            {
+                var m = modded[i];
+                m.anchoredPosition = new Vector2(x, art.anchoredPosition.y - (i + 1) * ModSlotHeight);
+                m.localScale = Vector3.one;
+            }
+            Log("options-relayout: " + modded.Count + " modded buttons flowed below " + anchor.name +
+                " at " + ModSlotHeight.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "px slots");
+        }
+
+        private static void FitButtonPanel(Transform buttonPanel)
+        {
+            try
+            {
+                var rt = buttonPanel as RectTransform;
+                if (rt == null) return;
+                var lg = buttonPanel.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
+                bool layoutLive = lg != null && lg.enabled;
+                if (layoutLive && lg.childControlHeight && lg.childForceExpandHeight)
+                {
+                    Log("options-fit: layout controls heights — children squeeze automatically, no expansion needed");
+                    return;
+                }
+                float total = 0f;
+                int visible = 0;
+                for (int i = 0; i < buttonPanel.childCount; i++)
+                {
+                    var c = buttonPanel.GetChild(i) as RectTransform;
+                    if (c == null || !c.gameObject.activeSelf) continue;
+                    total += Mathf.Max(0f, c.rect.height);
+                    visible++;
+                }
+                if (layoutLive) total += lg.spacing * Mathf.Max(0, visible - 1)
+                    + lg.padding.top + lg.padding.bottom;
+                float current = rt.rect.height;
+                if (total <= current + 1f)
+                {
+                    Log("options-fit: ButtonPanel " + current.ToString("0.#") + "px fits " + visible
+                        + " buttons (" + total.ToString("0.#") + "px needed)");
+                    return;
+                }
+                float deficit = total - current;
+                rt.sizeDelta = new Vector2(rt.sizeDelta.x, rt.sizeDelta.y + deficit);
+                // DOWNWARD-ONLY GROWTH: a center-pivoted rect grows both ways,
+                // shoving the game buttons up into the Back button. Keep the
+                // TOP edge fixed.
+                rt.anchoredPosition -= new Vector2(0f, (1f - rt.pivot.y) * deficit);
+                // The BG sibling paints the panel's backdrop — stretch it too.
+                var bgTf = buttonPanel.parent != null ? buttonPanel.parent.Find("ButtonPanelBG") : null;
+                var bg = bgTf as RectTransform;
+                if (bg != null && Mathf.Approximately(bg.rect.height, current))
+                {
+                    bg.sizeDelta = new Vector2(bg.sizeDelta.x, bg.sizeDelta.y + deficit);
+                    bg.anchoredPosition -= new Vector2(0f, (1f - bg.pivot.y) * deficit);
+                }
+                Log("options-fit: ButtonPanel expanded " + current.ToString("0.#") + " → " + total.ToString("0.#")
+                    + "px for " + visible + " buttons");
+            }
+            catch (Exception e)
+            {
+                Log("options-fit failed: " + e.Message);
+            }
+        }
+
         private static bool _openStateDumped;
 
         // Cheap poll from the persistent manager's update loop: build once the
@@ -304,6 +455,9 @@ namespace VRKoboldKare
         // after boot — works on the main menu, before any world load).
         internal static void Tick()
         {
+            // The mod doctor: runs whether or not the build succeeded — the
+            // open-menu relayout/fit is what makes the tabs visible.
+            try { PollOpenMenu(); } catch (Exception) { }
             if (!_built || _failed)
             {
                 var cfg = !ReferenceEquals(Plugin, null) ? Plugin.cfgOptionsMenuTab : null;

@@ -2,6 +2,47 @@
 
 All notable changes to VR-KoboldKare are documented here.
 
+## 0.3.0 — the input-ownership update (2026-11-21)
+
+### Added
+- Options-menu tabs **made visible**: ported KK-LLM-NPC v1.13.1's open-menu
+  relayout + panel fit — every modded tab (ours *and* KK-LLM-NPC's, which
+  stacked invisibly behind Graphics) flows into 78px slots below Multiplayer,
+  the panel's dead layout group is disabled, and the ButtonPanel (plus its BG
+  sibling) expands downward-only to fit. The game's own tabs are untouched.
+- **Input authority switch**: controllers take over the moment they generate
+  input; the desktop (keyboard+mouse) takes over the moment it sends anything.
+  No double-driven grabbing.
+- Ghost camera ownership: Harmony stand-down for KK-LLM-NPC's spectate writer
+  (the installed 1.12 has no hand-off flag — its writer fought the ghost rig
+  every pre-cull), plus the game switching to FreeCam while ghosting and back
+  to first person on release.
+- Ragdoll auto-switches the camera to third person; recovery to first person.
+- Lean-axis fix: the rig offset vector now goes through the STAGE→Unity Z-flip
+  (physical leans mapped sideways once mouse yaw rotated the frame).
+- HUD panels converted to **WorldSpace** head-follow panels (Unity was
+  clobbering the ScreenSpaceCamera scale every frame — the shrink never
+  applied), sized to a `HudWidth × HudHeight` window (defaults 900×600) that
+  hot-reloads live.
+- Compositor-starvation diagnostics: frame-budget warning, SYNCHRONIZED flap
+  counter with guidance (the "reboot fixes black vision" class is now
+  recognized in the log).
+- Hand-tracking gestures un-broken: the hand-tracker functions resolve through
+  `xrGetInstanceProcAddr` — the Khronos loader exports core functions only, so
+  the DllImport threw `EntryPointNotFoundException` on the session thread.
+
+### Fixed
+- Game window creation stalled while the WiVRn server was starting/headset-less
+  (the runtime probe blocked the main thread — init now runs on a background
+  thread).
+- HUD/chat panels clipped into floors and mountains: converted UI renders on a
+  dedicated URP overlay camera layer with cleared depth (layer 23, verified
+  free in the project TagManager) — drawn over the world, no occlusion.
+- Pause menu now converts too (it is Screen Space - Camera natively).
+- UI text mirrored on X (a 180° presentation flip showed the canvas' back).
+- README: desktop controls documented as the designed mode; controllers marked
+  experimental with the upstream WiVRn profile-attach issue referenced.
+
 ## 0.2.0 — the rewrite (2026-11-21)
 
 The 0.1.0 VR bridge was written against an OpenXR API that does not exist

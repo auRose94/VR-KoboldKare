@@ -18,7 +18,7 @@ namespace VRKoboldKare
     /// BepInEx plugin entry point. Manages config, lifecycle, scene gating,
     /// and Harmony patch application. Follows the KK-LLM-NPC pattern.
     /// </summary>
-    [BepInPlugin("com.vr.koboldkare", "VRKoboldKare", "0.2.0")]
+    [BepInPlugin("com.vr.koboldkare", "VRKoboldKare", "0.3.0")]
     public class VRKoboldKarePlugin : BaseUnityPlugin
     {
         /// <summary>Shared logger accessible from all subsystems.</summary>
@@ -246,7 +246,7 @@ namespace VRKoboldKare
             _vrManager = vrObj.AddComponent<VRManager>();
             _vrManager.Initialize(this);
 
-            Logger.LogInfo("VR-KoboldKare v0.2.0 loaded. Enable VR in-game or via config.");
+            Logger.LogInfo("VR-KoboldKare v0.3.0 loaded. Enable VR in-game or via config.");
         }
 
         /// <summary>
