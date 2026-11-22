@@ -54,7 +54,7 @@ namespace VRKoboldKare
         //  Per-frame
         // ------------------------------------------------------------------
 
-        private sealed class CanvasOverride { public Canvas C; public RenderMode Mode; public Camera Cam; public float BaseScale; }
+        private sealed class CanvasOverride { public Canvas C; public RenderMode Mode; public Camera Cam; public float BaseScale; public int Slot; }
         private readonly List<CanvasOverride> _canvasOverrides = new List<CanvasOverride>();
         private float _nextCanvasScan;
         private const float NearPlaneDistance = 15f;
@@ -76,13 +76,13 @@ namespace VRKoboldKare
                 bool seen = false;
                 foreach (var o in _canvasOverrides) if (o.C == c) { seen = true; break; }
                 if (seen) continue;
-                var overrideRec = new CanvasOverride { C = c, Mode = c.renderMode, Cam = c.worldCamera, BaseScale = c.scaleFactor };
+                var overrideRec = new CanvasOverride { C = c, Mode = c.renderMode, Cam = c.worldCamera, BaseScale = c.scaleFactor, Slot = _canvasOverrides.Count };
                 _canvasOverrides.Add(overrideRec);
                 try
                 {
                     c.worldCamera = cam;
                     c.renderMode = RenderMode.ScreenSpaceCamera;
-                    ApplyHudTransform(c, overrideRec.BaseScale);
+                    ApplyHudTransform(overrideRec);
                 }
                 catch { }
             }
@@ -99,41 +99,59 @@ namespace VRKoboldKare
         }
 
         /// <summary>
-        /// Shared HUD transform: occlusion-safe 15m plane + FOV-ratio and
-        /// virtual-distance scale. Re-invoked on HudDistance config changes so
-        /// tuning is live without restarting.
+        /// World-space HUD conversion: the canvas becomes a physical panel
+        /// floating in front of the head, sized so a HudWidth × HudHeight
+        /// virtual-pixel window fits in view (she: "shrink everything into
+        /// view, tighter toward the center"). World-space scale is NEVER
+        /// recomputed by Unity — ScreenSpaceCamera scaleFactor was being
+        /// clobbered per-frame, which is why the shrink "didn't work" — and
+        /// VRUI.Update places the panel in front of the head every frame.
         /// </summary>
-        private void ApplyHudTransform(Canvas c, float baseScale)
+        private void ApplyHudTransform(CanvasOverride o)
         {
             try
             {
-                var cam = Camera.main;
-                if (cam == null) return;
-                float virtualDist = 400f;
-                float hudW = 900f, hudH = 600f;
-                if (!ReferenceEquals(_manager.Plugin, null))
-                {
-                    if (_manager.Plugin.cfgHudDistance != null)
-                        virtualDist = Mathf.Max(HudMath.MinVirtualDistance, _manager.Plugin.cfgHudDistance.Value);
-                    if (_manager.Plugin.cfgHudWidth != null) hudW = _manager.Plugin.cfgHudWidth.Value;
-                    if (_manager.Plugin.cfgHudHeight != null) hudH = _manager.Plugin.cfgHudHeight.Value;
-                }
-                c.planeDistance = HudMath.NearPlaneDistance;
-                c.scaleFactor = HudMath.HudScaleFit(baseScale, VRRenderer.CurrentVFovDeg,
-                    cam.fieldOfView, virtualDist, 4f, hudW, hudH,
-                    VRRenderer.CurrentViewW, VRRenderer.CurrentViewH);
+                var c = o.C;
+                if (c == null) return;
+                c.renderMode = RenderMode.WorldSpace;
+                c.worldCamera = null;
+
+                var rt = c.GetComponent<RectTransform>();
+                if (rt == null) return;
+                float viewW = VRRenderer.CurrentViewW;
+                float viewH = VRRenderer.CurrentViewH;
+                float fit = HudMath.UiFitFraction(HudWidth(), HudHeight(), viewW, viewH);
+                // Panel world size: the canvas rect (authored in UI px for a
+                // 1080p-class screen) scaled to occupy the fit fraction of the
+                // headset's view at the follow distance.
+                float hudDistCfg = 3f;
+            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
+            float dist = HudMath.HudFollowDistance(hudDistCfg);
+                float worldH = 2f * dist * Mathf.Tan(VRRenderer.CurrentVFovDeg * 0.5f * 0.0174533f) * fit;
+                c.scaleFactor = worldH / Mathf.Max(1f, rt.rect.height);
             }
             catch { }
         }
 
-        /// <summary>Live re-apply after a HudDistance config change.</summary>
+        /// <summary>Live re-apply after a HUD config change.</summary>
         internal void ReapplyHudScale()
         {
             foreach (var o in _canvasOverrides)
             {
                 if (o.C == null) continue;
-                ApplyHudTransform(o.C, o.BaseScale);
+                ApplyHudTransform(o);
             }
+        }
+
+        private float HudWidth()
+        {
+            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudWidth != null) return _manager.Plugin.cfgHudWidth.Value; } catch (Exception) { }
+            return 900f;
+        }
+        private float HudHeight()
+        {
+            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudHeight != null) return _manager.Plugin.cfgHudHeight.Value; } catch (Exception) { }
+            return 600f;
         }
 
         private void Update()
@@ -160,6 +178,19 @@ namespace VRKoboldKare
             {
                 _radialPanel.transform.position = headPos + headRot * new Vector3(0f, -0.2f, 1.2f);
                 _radialPanel.transform.rotation = headRot;
+            }
+
+            // Converted HUD panels: follow the head, face the viewer. The
+            // canvas' front face is its -Z side, so rotate 180° to present it.
+            float hudDistCfg = 3f;
+            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
+            float dist = HudMath.HudFollowDistance(hudDistCfg);
+            foreach (var o in _canvasOverrides)
+            {
+                if (o.C == null) continue;
+                var t = o.C.transform;
+                t.position = headPos + headRot * new Vector3(0f, 0f, dist + o.Slot * 0.05f);
+                t.rotation = headRot * Quaternion.Euler(0f, 180f, 0f);
             }
         }
 

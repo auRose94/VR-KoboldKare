@@ -333,7 +333,34 @@ namespace VRKoboldKare
             }
 
             UpdateHeadVisibility();
+            UpdateRagdollCamera();
             TickGhostMode();
+        }
+
+        // Ragdoll → third person: the game's own camera state machine (her
+        // design). While the local player is ragdolled, the orbit spectates
+        // the floppy body; recovering returns to first person.
+        private bool _ragdollAuto;
+
+        private void UpdateRagdollCamera()
+        {
+            bool rag = false;
+            try
+            {
+                var r = Kobold != null ? Kobold.GetRagdoller() : null;
+                rag = r != null && r.ragdolled;
+            }
+            catch (Exception) { }
+            if (rag == _ragdollAuto) return;
+            _ragdollAuto = rag;
+            try
+            {
+                if (CamSwitcher != null)
+                    CamSwitcher.SwitchCamera(rag ? CameraSwitcher.CameraMode.ThirdPerson
+                                                 : CameraSwitcher.CameraMode.FirstPerson);
+                Log(rag ? "ragdoll — third-person spectate" : "recovered — first person");
+            }
+            catch (Exception) { }
         }
 
         private float _rebindAt;

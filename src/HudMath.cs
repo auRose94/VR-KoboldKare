@@ -16,6 +16,17 @@ namespace VRKoboldKare
         /// <summary>Minimum virtual distance (guard against divide-by-tiny).</summary>
         public const float MinVirtualDistance = 20f;
 
+        /// <summary>Clamped follow distance for the HUD panel (meters, head-relative).</summary>
+        public static float HudFollowDistance(float cfgValue)
+        {
+            return Mathf2Clamp(cfgValue, 1.5f, 8f);
+        }
+
+        private static float Mathf2Clamp(float v, float min, float max)
+        {
+            return v < min ? min : (v > max ? max : v);
+        }
+
         /// <summary>Angular-size ratio between the VR projection and the
         /// desktop camera FOV. &gt;1 when the VR projection is wider.</summary>
         public static float FovRatio(float currentVFovDeg, float camFovDeg)

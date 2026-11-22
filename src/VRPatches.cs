@@ -34,6 +34,7 @@ namespace VRKoboldKare
                 Patch_SetEyeDir();
                 Patch_UserSortGrabbables();
                 Patch_GrabberLateUpdate();
+                Patch_SpectateWriteCamera();
                 if (VRKoboldKarePlugin.Log != null)
                     VRKoboldKarePlugin.Log.LogInfo("VR: Harmony patches applied.");
             }
@@ -293,6 +294,45 @@ namespace VRKoboldKare
             {
                 return true;
             }
+        }
+
+        // ------------------------------------------------------------------
+        //  Patch — KK-LLM-NPC SpectateManager.WriteCamera stand-down.
+        //  The INSTALLED KKLLMNPC 1.12 has no ExternalSpectateCamera flag —
+        //  its spectate writer fights the ghost rig every pre-cull (last
+        //  writer wins = the eater's-eye view, locked). While ghost mode is
+        //  active, skip the writer entirely so the VR rig owns the view.
+        //  Graceful: the patch only applies when the NPC mod is loaded, and
+        //  v1.13's own flag path is honored in parallel.
+        // ------------------------------------------------------------------
+
+        private static void Patch_SpectateWriteCamera()
+        {
+            var t = Type.GetType("KKLLMNPC.SpectateManager, KKLLMNPC");
+            if (t == null)
+            {
+                if (VRKoboldKarePlugin.Log != null)
+                    VRKoboldKarePlugin.Log.LogInfo("VR: KKLLMNPC not loaded — spectate writer stand-down not needed");
+                return;
+            }
+            var m = t.GetMethod("WriteCamera",
+                BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+            if (m == null)
+            {
+                if (VRKoboldKarePlugin.Log != null)
+                    VRKoboldKarePlugin.Log.LogWarning("VR: KKLLMNPC WriteCamera not found — ghost mode may fight its camera writer (update KK-LLM-NPC)");
+                return;
+            }
+            _harmony.Patch(m,
+                prefix: new HarmonyMethod(typeof(VRPatches), nameof(SpectateWriteCamera_Prefix)));
+            if (VRKoboldKarePlugin.Log != null)
+                VRKoboldKarePlugin.Log.LogInfo("VR: spectate writer stand-down armed (ghost mode owns the camera)");
+        }
+
+        private static bool SpectateWriteCamera_Prefix(Camera cam)
+        {
+            var mgr = VRKoboldKarePlugin.VRManager;
+            return !(mgr != null && mgr.GhostModeActive);   // skip the writer while ghosting
         }
 
         // ------------------------------------------------------------------

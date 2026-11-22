@@ -121,8 +121,8 @@ namespace VRKoboldKare
                 "Virtual-pixel width of the UI panel in the headset view — the HUD scales to fit inside it (with HudHeight). Shrink both to tighten the UI toward the center.");
             cfgHudHeight = Config.Bind("VR.UI", "HudHeight", 600f,
                 "Virtual-pixel height of the UI panel in the headset view.");
-            cfgHudDistance = Config.Bind("VR.UI", "HudDistance", 400f,
-                "Plane distance for game HUD/menus converted into the headset view. Push back if the UI is too close.");
+            cfgHudDistance = Config.Bind("VR.UI", "HudDistance", 3f,
+                "Distance (meters) of the HUD/chat panels in front of the headset. Raise to shrink the UI angular size, lower to enlarge.");
             cfgOptionsMenuTab = Config.Bind("VR.UI", "OptionsMenuTab", true,
                 "Add 'KK VR' tabs to the game's options menu (main menu + in-game pause), driven by the game's own settings framework. Edits apply live and write to this config file.");
             cfgLocoSmoothSpeed = Config.Bind("VR.Locomotion", "SmoothSpeed", 2.0f,

@@ -458,6 +458,10 @@ namespace VRKoboldKare
                 }
             }
 
+            // If the panel DOES have a layout group, force a rebuild so the
+            // new buttons land in flow rather than stacked.
+            try { UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(buttonPanel.GetComponent<RectTransform>()); } catch (Exception) { }
+
             // Forensics for the "tabs injected but not visible" investigation:
             // dump what actually landed in the panels.
             try
