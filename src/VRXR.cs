@@ -64,9 +64,11 @@ namespace VRKoboldKare
         public static bool Initialized { get { return _backend != null; } }
         internal static OpenXRBackend OpenXR { get { return _backend as OpenXRBackend; } }
 
-        private static IVxrBackend _backend;
+        private static volatile IVxrBackend _backend;
         private static XrFrame _last;
         private static readonly object _lock = new object();
+        private static readonly object _initLock = new object();
+        private static volatile bool _initRunning;
 
         /// <summary>
         /// Try to initialize a backend. "openxr" fails loudly (no silent keyboard
@@ -76,6 +78,27 @@ namespace VRKoboldKare
         {
             if (log == null) log = delegate { };
             if (_backend != null) return true;
+            // Single-flight: the background init thread and an in-game Reinit
+            // can race; only one walks the runtime probe.
+            if (_initRunning) return false;
+            lock (_initLock)
+            {
+                if (_backend != null || _initRunning) return _backend != null;
+                _initRunning = true;
+            }
+            try
+            {
+                return TryInitCore(preferred, log);
+            }
+            finally
+            {
+                _initRunning = false;
+            }
+        }
+
+        private static bool TryInitCore(string preferred, Action<string> log)
+        {
+            if (log == null) log = delegate { };
 
             string p = (preferred == null) ? "auto" : preferred.ToLowerInvariant();
             IVxrBackend[] candidates;

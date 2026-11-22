@@ -46,13 +46,42 @@ namespace VRKoboldKare
 
             _m.UpdateHands(_f);
 
+            // ---- INPUT AUTHORITY ----
+            // Controllers take over the moment they generate anything; the
+            // moment the keyboard or mouse sends anything, the desktop takes
+            // over. Detected BEFORE the desktop-mouse synthesis so a desktop
+            // click never counts as controller grip.
+            try
+            {
+                bool ctrlActivity =
+                    _f.left.trigger > 0.1f || _f.left.grip > 0.1f ||
+                    _f.right.trigger > 0.1f || _f.right.grip > 0.1f ||
+                    _f.left.stick.sqrMagnitude > 0.01f || _f.right.stick.sqrMagnitude > 0.01f ||
+                    _f.left.a || _f.left.b || _f.left.x || _f.left.y ||
+                    _f.right.a || _f.right.b || _f.right.x || _f.right.y;
+                if (ctrlActivity) _m.SetControllerAuthority(true);
+
+                bool desktopActivity = false;
+                var mouse = UnityEngine.InputSystem.Mouse.current;
+                if (mouse != null && Application.isFocused)
+                {
+                    if (mouse.delta.ReadValue().sqrMagnitude > 4f) desktopActivity = true;
+                    if (mouse.leftButton.isPressed || mouse.rightButton.isPressed) desktopActivity = true;
+                    if (mouse.scroll.ReadValue().y != 0) desktopActivity = true;
+                }
+                if (VRKoboldKarePlugin.KeyDownAny(KeyCode.W) || VRKoboldKarePlugin.KeyDownAny(KeyCode.A) || VRKoboldKarePlugin.KeyDownAny(KeyCode.S) ||
+                    VRKoboldKarePlugin.KeyDownAny(KeyCode.D) || VRKoboldKarePlugin.KeyDownAny(KeyCode.E) || VRKoboldKarePlugin.KeyDownAny(KeyCode.Space)) desktopActivity = true;
+                if (desktopActivity && _m.ControllerAuthority) _m.SetControllerAuthority(false);
+            }
+            catch (Exception) { }
+
             // Desktop fallback input, matching the game's own desktop scheme:
             // LMB = grab (grip), RMB = throw/use (trigger). Scroll = push-pull
             // while grabbing.
             try
             {
                 var mouse = UnityEngine.InputSystem.Mouse.current;
-                if (mouse != null && Application.isFocused)
+                if (mouse != null && Application.isFocused && !_m.ControllerAuthority)
                 {
                     if (mouse.leftButton.isPressed) _f.right.grip = 1f;
                     if (mouse.rightButton.isPressed) _f.right.trigger = 1f;
@@ -93,8 +122,11 @@ namespace VRKoboldKare
                         }
                     }
                     catch { }
-                    if (VRKoboldKarePlugin.KeyDownAny(kl)) _m.AddYaw(-snap);
-                    if (VRKoboldKarePlugin.KeyDownAny(kr)) _m.AddYaw(snap);
+                    if (!_m.ControllerAuthority)
+                    {
+                        if (VRKoboldKarePlugin.KeyDownAny(kl)) _m.AddYaw(-snap);
+                        if (VRKoboldKarePlugin.KeyDownAny(kr)) _m.AddYaw(snap);
+                    }
                 }
             }
             catch { }
@@ -230,14 +262,19 @@ namespace VRKoboldKare
             Vector2 move = _f.left.stick;
             try
             {
-                Vector2 kb = Vector2.zero;
-                if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.W)) kb.y += 1f;
-                if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.S)) kb.y -= 1f;
-                if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.D)) kb.x += 1f;
-                if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.A)) kb.x -= 1f;
-                if (kb.sqrMagnitude > 0.01f) move = kb;
+                // Keyboard movement counts only under DESKTOP authority — with
+                // controllers in charge the stick owns locomotion.
+                if (!_m.ControllerAuthority)
+                {
+                    Vector2 kb = Vector2.zero;
+                    if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.W)) kb.y += 1f;
+                    if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.S)) kb.y -= 1f;
+                    if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.D)) kb.x += 1f;
+                    if (VRKoboldKarePlugin.KeyHeldAny(KeyCode.A)) kb.x -= 1f;
+                    if (kb.sqrMagnitude > 0.01f) move = kb;
+                }
             }
-            catch { }
+            catch (Exception) { }
             _m.Loco.SetMoveInput(move, Quaternion.Euler(0f, _m.YawOffset, 0f) * _f.headRot);
         }
 

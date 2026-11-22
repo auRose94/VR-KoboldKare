@@ -209,12 +209,28 @@ namespace VRKoboldKare
             Config.SettingChanged += OnSettingChanged;
 
             string headset = cfgHeadset != null ? cfgHeadset.Value : "auto";
-            bool bridgeOk = VRXR.TryInit(headset,
-                m => { if (Log != null) Log.LogWarning("VRXR: " + m); });
-            if (bridgeOk)
-                Logger.LogInfo("VR-KoboldKare: VR bridge ready (backend: " + VRXR.BackendName + ").");
-            else
-                Logger.LogWarning("VR-KoboldKare: VR bridge init failed; keyboard fallback only.");
+            // Background init: the runtime probe (enumeration + system query)
+            // can BLOCK the calling thread while the WiVRn server is starting
+            // or headset-less — running it on the main thread stalled window
+            // creation until a headset connected. The game boots immediately;
+            // the bridge comes up whenever the runtime answers.
+            var initThread = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    bool ok = VRXR.TryInit(headset,
+                        m => { if (Log != null) Log.LogWarning("VRXR: " + m); });
+                    if (Log != null)
+                        Log.LogInfo(ok
+                            ? "VR-KoboldKare: VR bridge ready (backend: " + VRXR.BackendName + ")"
+                            : "VR-KoboldKare: VR bridge init failed; keyboard fallback only.");
+                }
+                catch (Exception e)
+                {
+                    if (Log != null) Log.LogWarning("VR: bridge init thread: " + e.Message);
+                }
+            }) { IsBackground = true, Name = "VRKK-Init" };
+            initThread.Start();
 
             // ---- apply Harmony patches ----
             ApplyPatches();

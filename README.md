@@ -74,6 +74,17 @@ See [docs/CONFIG.md](docs/CONFIG.md) for the full configuration reference.
 
 ## Controls
 
+> **Desktop (keyboard + mouse) is the designed and fully supported input
+> mode.** VR head tracking, grabbing, and interactions all work with it, and
+> it's what the settings tabs assume.
+>
+> **Quest Touch controllers are experimental and NOT yet designed around the
+> game.** WiVRn currently does not reliably attach an interaction profile to
+> apps on Quest 3 (upstream [WiVRn issue #408](https://github.com/WiVRn/WiVRn/issues/408)),
+> so controller sticks/buttons may do nothing until that's fixed upstream.
+> Hand-tracking gestures (pinch = trigger, fist = grab) are the controller-free
+> path. Desktop input always takes over the moment keyboard or mouse is used.
+
 | Action | VR Input |
 |--------|----------|
 | Move | Left thumbstick |

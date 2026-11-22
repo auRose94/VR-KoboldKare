@@ -72,7 +72,11 @@ namespace VRKoboldKare
             foreach (var c in UnityEngine.Object.FindObjectsOfType<Canvas>())
             {
                 if (c == null || c == _canvas) continue;
-                if (c.renderMode != RenderMode.ScreenSpaceOverlay) continue;
+                // Overlay never renders into RTs; ScreenSpaceCamera renders
+                // but at full-FOV size (unusable in the headset) — convert
+                // BOTH to WorldSpace panels.
+                if (c.renderMode != RenderMode.ScreenSpaceOverlay &&
+                    c.renderMode != RenderMode.ScreenSpaceCamera) continue;
                 bool seen = false;
                 foreach (var o in _canvasOverrides) if (o.C == c) { seen = true; break; }
                 if (seen) continue;
@@ -190,7 +194,9 @@ namespace VRKoboldKare
                 if (o.C == null) continue;
                 var t = o.C.transform;
                 t.position = headPos + headRot * new Vector3(0f, 0f, dist + o.Slot * 0.05f);
-                t.rotation = headRot * Quaternion.Euler(0f, 180f, 0f);
+                // No 180° flip: the canvas' +Z along the view direction is
+                // the READABLE side (the flip mirrored the text on X).
+                t.rotation = headRot;
             }
         }
 

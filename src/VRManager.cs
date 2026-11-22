@@ -54,6 +54,20 @@ namespace VRKoboldKare
         internal float YawOffset { get { return _yawOffset; } }
         internal void AddYaw(float deg) { _yawOffset += deg; }
 
+        /// <summary>INPUT AUTHORITY: desktop (keyboard+mouse) or controllers.
+        /// Flips the moment either side produces input — controllers are used
+        /// the instant they generate anything, and the moment the keyboard or
+        /// mouse sends anything the desktop takes over. Desktop is the default
+        /// (her controllers stream nothing in the current WiVRn state).</summary>
+        internal bool ControllerAuthority { get; private set; }
+
+        internal void SetControllerAuthority(bool on)
+        {
+            if (ControllerAuthority == on) return;
+            ControllerAuthority = on;
+            Log("input authority -> " + (on ? "CONTROLLERS (keyboard/mouse stand down)" : "DESKTOP (keyboard/mouse)"));
+        }
+
         // ---- spectate ghost mode (KK-LLM-NPC integration) ----
         // When the NPC mod's SpectateManager takes the camera (the player got
         // eaten), the VR rig detaches into a free-floating ghost instead of
