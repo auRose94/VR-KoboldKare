@@ -308,6 +308,7 @@ namespace VRKoboldKare
                 Log("hotkey monitor live on persistent GO (HOME / INSERT / F8 toggle VR)");
             }
             VRKoboldKarePlugin.ConsumeReloadAndApply();
+            OptionsMenuTab.Tick();   // best-effort: injects the options tabs once the menu prefab exists
             try
             {
                 if (VRKoboldKarePlugin.KeyDownAny(KeyCode.Home) ||

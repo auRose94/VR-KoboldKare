@@ -80,6 +80,7 @@ namespace VRKoboldKare
         internal ConfigEntry<string>  cfgSnapRight;
         internal ConfigEntry<float>   cfgMouseSens;
         internal ConfigEntry<float>   cfgHudDistance;
+        internal ConfigEntry<bool>    cfgOptionsMenuTab;
         internal ConfigEntry<string>  cfgRenderMode;
         internal ConfigEntry<float>   cfgEyeScale;
         internal ConfigEntry<bool>    cfgFlipY;
@@ -116,6 +117,8 @@ namespace VRKoboldKare
                 "Degrees of view yaw per mouse pixel while VR is on (seated fallback rotation).");
             cfgHudDistance = Config.Bind("VR.UI", "HudDistance", 400f,
                 "Plane distance for game HUD/menus converted into the headset view. Push back if the UI is too close.");
+            cfgOptionsMenuTab = Config.Bind("VR.UI", "OptionsMenuTab", true,
+                "Add 'KK VR' tabs to the game's options menu (main menu + in-game pause), driven by the game's own settings framework. Edits apply live and write to this config file.");
             cfgLocoSmoothSpeed = Config.Bind("VR.Locomotion", "SmoothSpeed", 2.0f,
                 "Meters per second for smooth locomotion.");
             cfgLocoMaxTeleportDistance = Config.Bind("VR.Locomotion", "MaxTeleportDistance", 8.0f,
@@ -195,6 +198,7 @@ namespace VRKoboldKare
                 "held items always stay visible either way.");
 
             // ---- initialize VR input bridge (SteamVR / OpenXR / keyboard fallback) ----
+            OptionsMenuTab.Ensure(this);
             StartConfigWatcher();
             Config.SettingChanged += OnSettingChanged;
 

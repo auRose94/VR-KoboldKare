@@ -89,7 +89,9 @@ if [ "$COMPILER" = "mcs" ]; then
       -r:"$MGMT/Unity.Timeline.dll" \
       -r:"$MGMT/PhotonUnityNetworking.Utilities.dll" \
       -r:"$MGMT/com.naelstrof.photon.profiler.dll" \
-      -r:"$MGMT/com.naelstrof.word-filter.dll"
+      -r:"$MGMT/com.naelstrof.word-filter.dll" \
+      -r:"$MGMT/Unity.Localization.dll" \
+      -r:"$MGMT/Unity.TextMeshPro.dll"
     cp VRKoboldKare.dll "$KDIR/BepInEx/plugins/VRKoboldKare.dll"
     # Deploy the Khronos OpenXR loader next to the plugin (Proton resolves
     # wineopenxr.dll through the prefix registry from here).
