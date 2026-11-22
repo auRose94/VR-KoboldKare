@@ -846,11 +846,18 @@ namespace VRKoboldKare
                 Tuple.Create("aim_pose", "/user/hand/right/input/aim/pose"),
             };
 
+            // Widest-coverage suggestion set: Monado's binding layer attaches
+            // whatever app-suggested profile it can satisfy with the active
+            // devices' inputs — more profiles = more chances one attaches.
+            // (index_controller has the broadest Monado binding coverage and
+            // Touch Plus exposes trigger/squeeze/thumbstick equivalents.)
             string[] touchProfiles =
             {
-                "/interaction_profiles/oculus/touch_controller.json",
-                "/interaction_profiles/oculus/touch_controller_pro.json",
                 "/interaction_profiles/meta/touch_plus_controller.json",
+                "/interaction_profiles/oculus/touch_controller.json",
+                "/interaction_profiles/meta/touch_controller_pro.json",
+                "/interaction_profiles/valve/index_controller.json",
+                "/interaction_profiles/htc/vive_controller.json",
                 "/interaction_profiles/bytedance/pico4_controller.json",
             };
             foreach (string profile in touchProfiles)
@@ -960,13 +967,24 @@ namespace VRKoboldKare
                 var st = new XrInteractionProfileState { type = XrType.INTERACTION_PROFILE_STATE };
                 lock (_xrLock)
                 {
-                    if (XrResultCode.Ok(XrApi.xrGetCurrentInteractionProfile(_session, _pathHandR, ref st)) &&
-                        st.interactionProfile != 0)
+                    if (!XrResultCode.Ok(XrApi.xrGetCurrentInteractionProfile(_session, _pathHandR, ref st)))
+                    {
+                        Log("interaction profile (right): query failed");
+                        return;
+                    }
+                    if (st.interactionProfile != 0)
                     {
                         var sb = new StringBuilder(256);
                         uint n;
                         if (XrResultCode.Ok(XrApi.xrPathToString(_instance, st.interactionProfile, 256, out n, sb)))
                             Log("interaction profile (right): " + sb.ToString());
+                    }
+                    else
+                    {
+                        // Explicit zero: the runtime has attached NO profile to
+                        // the hand — controllers not streaming to the runtime,
+                        // or no suggested profile can be satisfied.
+                        Log("interaction profile (right): NONE attached");
                     }
                 }
             }
