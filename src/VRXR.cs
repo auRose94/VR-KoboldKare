@@ -1326,6 +1326,8 @@ namespace VRKoboldKare
 
         private int _submitFailLog;
         internal uint FramesSubmitted { get; private set; }
+        private System.Diagnostics.Stopwatch _submitWatch = new System.Diagnostics.Stopwatch();
+        private uint _lastMilestone;
 
         internal bool SubmitFrame(long displayTime, IntPtr layerPtr, uint layerCount)
         {
@@ -1350,8 +1352,16 @@ namespace VRKoboldKare
                 return false;
             }
             FramesSubmitted++;
-            if (FramesSubmitted == 300 || FramesSubmitted == 1800)
-                Log("submitted " + FramesSubmitted + " frames total");
+            if (FramesSubmitted == 1) _submitWatch.Restart();
+            if (FramesSubmitted == 300 || FramesSubmitted == 1800 || FramesSubmitted == 3600)
+            {
+                double avgMs = _submitWatch.Elapsed.TotalMilliseconds /
+                               System.Math.Max(1, FramesSubmitted - _lastMilestone);
+                Log("submitted " + FramesSubmitted + " frames total (avg " +
+                    avgMs.ToString("0.0") + " ms/frame over the last stretch)");
+                _lastMilestone = FramesSubmitted;
+                _submitWatch.Restart();
+            }
             return true;
         }
 
@@ -1435,7 +1445,7 @@ namespace VRKoboldKare
         private XrApi.LocateHandJointsEXT_t _locateHandJoints;
         private XrApi.DestroyHandTrackerEXT_t _destroyHandTracker;
 
-        internal bool AcquireWaitAndCopyPrepare(ulong swapchain, out uint index)
+        internal bool AcquireAndWait(ulong swapchain, out uint index)
         {
             index = 0;
             if (_session == 0) return false;

@@ -534,41 +534,51 @@ namespace VRKoboldKare
             if (_shouldRender)
             {
                 bool allOk = true;
+                // Acquire BOTH, copy BOTH, ONE fence, release BOTH — a single
+                // full-pipeline stall per frame. Two stalls (one per eye) blew
+                // the compositor deadline at EyeScale 1.0 and the session
+                // flapped to SYNCHRONIZED (black headset).
+                var okEye = new bool[2];
+                var idxs = new uint[2];
                 for (int eye = 0; eye < 2; eye++)
                 {
-                    uint idx;
-                    if (!_xr.AcquireWaitAndCopyPrepare(_swapchain[eye], out idx))
+                    if (!_xr.AcquireAndWait(_swapchain[eye], out idxs[eye]))
                     {
                         if (_frameFailLog < 10) { _frameFailLog++; LogWarn("acquire failed eye " + eye); }
                         allOk = false;
                         break;
                     }
-                    // Release ONLY on successful acquire — releasing an image
-                    // we never got poisons the swapchain for good.
+                    okEye[eye] = true;   // acquired: caller must release even on copy failure
+                }
+                if (allOk)
+                {
                     try
                     {
                         if (_renderMode != "nocopy")
                         {
-                            Texture2D dst = _wrapped[eye][idx];
-                            RenderTexture src = _renderMode == "mono" ? _monoRT : _eyeRT[eye];
-                            if (src != null)
+                            for (int eye = 0; eye < 2; eye++)
                             {
-                                Graphics.CopyTexture(src, 0, 0, dst, 0, 0);
-                                // CopyTexture only QUEUES GPU work on the render
-                                // thread — releasing now would let the compositor
-                                // read the image mid-copy (the one-eye/partial-
-                                // fill race + the DXVK crash). ReadPixels forces
-                                // a full pipeline flush before we release.
-                                ForceGPUCompletion(src);
+                                Texture2D dst = _wrapped[eye][idxs[eye]];
+                                RenderTexture src = _renderMode == "mono" ? _monoRT : _eyeRT[eye];
+                                if (src != null)
+                                    Graphics.CopyTexture(src, 0, 0, dst, 0, 0);
                             }
+                            // CopyTexture only QUEUES GPU work on the render
+                            // thread — releasing before the copies execute lets
+                            // the compositor read images mid-write. One
+                            // ReadPixels flush guarantees both copies landed
+                            // before either release.
+                            ForceGPUCompletion(_renderMode == "mono" ? _monoRT : _eyeRT[0]);
                         }
                     }
                     finally
                     {
-                        _xr.ReleaseSwapchainImage(_swapchain[eye]);
+                        for (int eye = 0; eye < 2; eye++)
+                            if (okEye[eye])
+                                _xr.ReleaseSwapchainImage(_swapchain[eye]);
                     }
+                    rendered = true;
                 }
-                rendered = allOk;
             }
 
             // Write views + layer into unmanaged memory, then submit.
