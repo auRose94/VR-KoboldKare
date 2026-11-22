@@ -1,5 +1,7 @@
 # VR-KoboldKare
 
+[![Build](https://github.com/auRose94/VR-KoboldKare/actions/workflows/build.yml/badge.svg)](https://github.com/auRose94/VR-KoboldKare/actions/workflows/build.yml)
+
 A BepInEx plugin that adds full VR support to **KoboldKare**, enabling one-to-one gameplay with Meta Quest via WiVRn.
 
 ## Features
