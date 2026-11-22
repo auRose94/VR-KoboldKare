@@ -129,6 +129,7 @@ namespace VRKoboldKare
 
         /// <summary>The dedicated UI layer bit (for excluding it from world cameras).</summary>
         internal int UiLayer => _uiLayer;
+        internal void SetLayerRecursivelyInternal(GameObject go, int layer) => SetLayerRecursively(go, layer);
 
         private void SyncOverlayProjection()
         {
@@ -144,7 +145,7 @@ namespace VRKoboldKare
             catch { }
         }
 
-        private void SetLayerRecursively(GameObject go, int layer)
+        internal void SetLayerRecursively(GameObject go, int layer)
         {
             go.layer = layer;
             foreach (Transform child in go.transform)
