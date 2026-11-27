@@ -5,6 +5,21 @@ All notable changes to VR-KoboldKare are documented here.
 ## Unreleased (0.4.0 batch, 2026-11-27)
 
 ### Fixed — the playtest round
+- **The VR toggle refuses a half-handshake** (regression report: toggling VR
+  flipped into the keyboard/headless fallback when OpenXR failed — she was
+  left in the WiVRn dashboard while desktop VR pretended). `EnableVR` now
+  gates on the session ACTUALLY rendering (runtime found, no keyboard
+  fallback, headset found — state ≥ SYNCHRONIZED). When not ready it arms a
+  pending-enable that retries the bridge every 2s for 60s and flips VR the
+  moment the headset connects; F8 while pending cancels; the timeout logs
+  the WiVRn-service / pressure-vessel checks. Desktop gameplay is never
+  switched for a dead runtime.
+- **Instance-creation ladder hardening**: ANY `xrCreateInstance` failure
+  with extensions requested drops the optional tail (body tracking first,
+  then d3d11) and retries — an advertised-but-poisoned extension combination
+  can no longer take the whole bridge down. Only the empty-list failure is
+  terminal, and it now logs the WiVRn service / pressure-vessel checks
+  instead of a bare result code.
 - **Mouse pitch no longer rolls the camera**: the pitch layer composed about
   the WORLD X axis *after* the yaw layer (`Euler(pitch, yaw, 0) · headRot`),
   so any head yaw turned vertical mouse look into roll. The composition is

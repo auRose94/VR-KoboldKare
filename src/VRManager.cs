@@ -147,8 +147,17 @@ namespace VRKoboldKare
             DisableVR();
         }
 
+        // Pending VR enable: the toggle now WAITS for a genuinely rendering
+        // OpenXR session instead of flipping VR on blind (the 0.4.0
+        // half-handshake regression — she was left in the WiVRn dashboard
+        // while the keyboard backend pretended). F8 while pending cancels.
+        private bool _vrEnablePending;
+        private float _vrEnableDeadline;
+        private float _vrRetryAt;
+
         public void ToggleVR()
         {
+            if (_vrEnablePending) { _vrEnablePending = false; Log("VR toggle: pending enable cancelled"); return; }
             if (Enabled) DisableVR();
             else EnableVR();
         }
@@ -167,6 +176,36 @@ namespace VRKoboldKare
                 }
             }
             catch (Exception) { }
+
+            // WiVRn may have started after the game did — retry the bridge.
+            if (!VRXR.Initialized || VRXR.BackendName == "keyboard")
+            {
+                string pref = !ReferenceEquals(Plugin, null) && Plugin.cfgHeadset != null ? Plugin.cfgHeadset.Value : "auto";
+                VRXR.Reinit(pref, m => { if (VRKoboldKarePlugin.Log != null) VRKoboldKarePlugin.Log.LogWarning("VRXR: " + m); });
+            }
+
+            // HARD GATE: never switch into VR unless the OpenXR session is
+            // ACTUALLY rendering — runtime found (no keyboard fallback) and
+            // headset found (state ≥ SYNCHRONIZED). Otherwise arm the
+            // pending-enable: the manager tick retries and flips VR on the
+            // moment the headset connects, while desktop gameplay stays
+            // untouched.
+            if (VRXR.BackendName != "openxr" || !VRXR.SessionRendering)
+            {
+                if (!_vrEnablePending)
+                {
+                    _vrEnablePending = true;
+                    _vrEnableDeadline = Time.unscaledTime + 60f;
+                    _vrRetryAt = 0f;
+                    Log("VR toggle: OpenXR not ready (" +
+                        (VRXR.BackendName != "openxr"
+                            ? "no runtime — backend " + VRXR.BackendName
+                            : "session not rendering yet") +
+                        ") — VR enables the moment the headset connects; press F8 again to cancel");
+                }
+                return;
+            }
+
             Log("enabling VR...");
 
             // Mono mode paints the desktop window black and it's easy to lose
@@ -179,13 +218,6 @@ namespace VRKoboldKare
                 if (settings != null) settings.backgroundBehavior = UnityEngine.InputSystem.InputSettings.BackgroundBehavior.IgnoreFocus;
             }
             catch { }
-
-            // WiVRn may have started after the game did — retry the bridge.
-            if (!VRXR.Initialized || VRXR.BackendName == "keyboard")
-            {
-                string pref = !ReferenceEquals(Plugin, null) && Plugin.cfgHeadset != null ? Plugin.cfgHeadset.Value : "auto";
-                VRXR.Reinit(pref, m => { if (VRKoboldKarePlugin.Log != null) VRKoboldKarePlugin.Log.LogWarning("VRXR: " + m); });
-            }
 
             if (!FindPlayer())
             {
@@ -404,6 +436,33 @@ namespace VRKoboldKare
             VRKoboldKarePlugin.ConsumeReloadAndApply();
             OptionsMenuTab.Tick();   // best-effort: injects the options tabs once the menu prefab exists
             VRNet.Tick(this);        // multiplayer VR presence (room-scoped announce + scan)
+
+            // Pending VR enable: retry the bridge and flip VR the moment the
+            // OpenXR session genuinely renders (the toggle gates on it — no
+            // half-handshakes).
+            if (_vrEnablePending)
+            {
+                if (Time.unscaledTime >= _vrEnableDeadline)
+                {
+                    _vrEnablePending = false;
+                    Log("VR toggle: gave up waiting for an OpenXR session after 60s — check the runtime" +
+                        " service (systemctl --user status wivrn) and the pressure-vessel launch options");
+                }
+                else if (Time.unscaledTime >= _vrRetryAt)
+                {
+                    _vrRetryAt = Time.unscaledTime + 2f;
+                    if (VRXR.BackendName != "openxr")
+                    {
+                        string pref = !ReferenceEquals(Plugin, null) && Plugin.cfgHeadset != null ? Plugin.cfgHeadset.Value : "auto";
+                        VRXR.Reinit(pref, m => { if (VRKoboldKarePlugin.Log != null) VRKoboldKarePlugin.Log.LogWarning("VRXR: " + m); });
+                    }
+                    if (VRXR.BackendName == "openxr" && VRXR.SessionRendering)
+                    {
+                        _vrEnablePending = false;
+                        EnableVR();   // the gate passes now
+                    }
+                }
+            }
             try
             {
                 if (VRKoboldKarePlugin.KeyDownAny(KeyCode.Home) ||

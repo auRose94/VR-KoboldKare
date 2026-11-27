@@ -93,6 +93,13 @@ namespace VRKoboldKare
         /// when a body actually streams — see XrFrame.body.valid).</summary>
         public static bool BodyTrackingAvailable { get { var xr = OpenXR; return xr != null && xr.BodyTrackingAvailable; } }
 
+        /// <summary>True when an OpenXR backend owns the session AND frames
+        /// are flowing (state ≥ SYNCHRONIZED) — the honest "WiVRn/SteamVR is
+        /// up and the headset is found" signal. The VR toggle gates on this:
+        /// no more enabling VR into a half-handshake with the keyboard
+        /// backend pretending.</summary>
+        public static bool SessionRendering { get { var xr = OpenXR; return xr != null && xr.SessionRendering; } }
+
         private static volatile IVxrBackend _backend;
         private static XrFrame _last;
         private static readonly object _lock = new object();
@@ -405,10 +412,16 @@ namespace VRKoboldKare
                         _hasBodyTracking = wantList.Contains(XrExt.BodyTrackingFB);
                         break;
                     }
-                    if (r == XrResultCode.XR_ERROR_EXTENSION_NOT_PRESENT && wantList.Count > 0)
+                    // ANY create failure with extensions still requested drops
+                    // the optional tail and retries — an advertised-but-
+                    // poisoned extension combination must not take the whole
+                    // bridge down (RUNTIME_UNAVAILABLE with body tracking
+                    // requested was the 0.4.0 WiVRn regression). Only the
+                    // EMPTY list failing is terminal.
+                    if (wantList.Count > 0)
                     {
-                        log("OpenXR: instance create rejected wanted extensions (" +
-                            XrResultCode.Name(r) + ") — retrying without '" + wantList[wantList.Count - 1] + "'");
+                        log("OpenXR: instance create failed (" + XrResultCode.Name(r) + ") — retrying without '" +
+                            wantList[wantList.Count - 1] + "'");
                         wantList.RemoveAt(wantList.Count - 1);
                         continue;
                     }
@@ -421,7 +434,9 @@ namespace VRKoboldKare
             }
             if (!XrResultCode.Ok(r))
             {
-                log("OpenXR: xrCreateInstance failed: " + XrResultCode.Name(r));
+                log("OpenXR: xrCreateInstance failed: " + XrResultCode.Name(r) +
+                    " — is the runtime service up (systemctl --user status wivrn) and are the" +
+                    " pressure-vessel launch options set (PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1)?");
                 return false;
             }
 
