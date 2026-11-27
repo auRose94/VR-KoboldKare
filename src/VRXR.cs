@@ -1855,7 +1855,9 @@ namespace VRKoboldKare
                     }
                     catch { }
                     _yaw += d.x * sens;
-                    _pitch = Mathf.Clamp(_pitch + d.y * sens, -85f, 85f);
+                    // Unity X-rotation is positive DOWN — negate so mouse-up
+                    // looks up (0.4.0 shipped reversed).
+                    _pitch = Mathf.Clamp(_pitch - d.y * sens, -85f, 85f);
                 }
             }
 

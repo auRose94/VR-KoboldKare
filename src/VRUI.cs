@@ -54,7 +54,7 @@ namespace VRKoboldKare
         //  Per-frame
         // ------------------------------------------------------------------
 
-        private sealed class CanvasOverride { public Canvas C; public RenderMode Mode; public Camera Cam; public float BaseScale; public int Slot; }
+        private sealed class CanvasOverride { public Canvas C; public RenderMode Mode; public Camera Cam; public float BaseScale; public int OriginalSorting; public int Slot; }
         private readonly List<CanvasOverride> _canvasOverrides = new List<CanvasOverride>();
         private float _nextCanvasScan;
         private const float NearPlaneDistance = 15f;
@@ -173,14 +173,20 @@ namespace VRKoboldKare
                 bool seen = false;
                 foreach (var o in _canvasOverrides) if (o.C == c) { seen = true; break; }
                 if (seen) continue;
-                var overrideRec = new CanvasOverride { C = c, Mode = c.renderMode, Cam = c.worldCamera, BaseScale = c.scaleFactor, Slot = _canvasOverrides.Count };
+                var overrideRec = new CanvasOverride { C = c, Mode = c.renderMode, Cam = c.worldCamera, BaseScale = c.scaleFactor, OriginalSorting = c.sortingOrder, Slot = _canvasOverrides.Count };
                 _canvasOverrides.Add(overrideRec);
+                _sharedScale = -1f;   // a new layer changes the reference height
                 try
                 {
                     EnsureUiLayer();
                     if (_uiLayer > 0) SetLayerRecursively(c.gameObject, _uiLayer);
                     c.renderMode = RenderMode.WorldSpace;
                     c.worldCamera = null;
+                    // Deterministic layer order: the desktop screen composites
+                    // several canvases by render order — world-space panels
+                    // need the same guarantee (sortingOrder sorts the
+                    // transparent queue).
+                    c.sortingOrder = 10 + overrideRec.Slot;
                     ApplyHudTransform(overrideRec);
                 }
                 catch { }
@@ -192,7 +198,7 @@ namespace VRKoboldKare
             foreach (var o in _canvasOverrides)
             {
                 if (o.C == null) continue;
-                try { o.C.renderMode = o.Mode; o.C.worldCamera = o.Cam; o.C.scaleFactor = o.BaseScale; } catch { }
+                try { o.C.renderMode = o.Mode; o.C.worldCamera = o.Cam; o.C.scaleFactor = o.BaseScale; o.C.sortingOrder = o.OriginalSorting; } catch { }
             }
             _canvasOverrides.Clear();
         }
@@ -217,26 +223,19 @@ namespace VRKoboldKare
 
                 var rt = c.GetComponent<RectTransform>();
                 if (rt == null) return;
-                float viewW = VRRenderer.CurrentViewW;
-                float viewH = VRRenderer.CurrentViewH;
-                float fit = HudMath.UiFitFraction(HudWidth(), HudHeight(), viewW, viewH);
-                // Panel world size: the canvas rect (authored in UI px for a
-                // 1080p-class screen) scaled to occupy the fit fraction of the
-                // headset's view at the follow distance, times the UI scale
-                // multiplier (VR.UI:Scale — was DEAD config until 0.4.0; <1
-                // shrinks the box, >1 grows it).
-                float hudDistCfg = 3f;
-                try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
-                float dist = HudMath.HudFollowDistance(hudDistCfg);
-                float uiScale = 1f;
-                try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgUIScale != null) uiScale = Mathf.Clamp(_manager.Plugin.cfgUIScale.Value, 0.1f, 4f); } catch (Exception) { }
-                float worldH = 2f * dist * Mathf.Tan(VRRenderer.CurrentVFovDeg * 0.5f * 0.0174533f) * fit * uiScale;
-                c.scaleFactor = worldH / Mathf.Max(1f, rt.rect.height);
-                // Conversion transparency: she couldn't tell whether settings
-                // applied — every canvas conversion logs its numbers.
+                float dist = HudDistance();
+                // VIRTUAL SCREEN (the "everything cleanly in one box" fix):
+                // every converted canvas shares ONE pixel-to-world scale —
+                // the reference height (the tallest canvas, i.e. the desktop
+                // "screen") maps to the box, and every other layer keeps its
+                // authored proportions relative to it. The old per-canvas
+                // scale (worldH / own height) blew small canvases up to the
+                // full box: the game's crosshair canvas rendered 2-4x too
+                // big and the layers never aligned into one screen.
+                c.scaleFactor = SharedScale(dist);
                 var l = VRKoboldKarePlugin.Log;
-                if (l != null) l.LogInfo(string.Format("VRUI: '{0}' {1:0}x{2:0}px -> {3:0.00}m tall at {4:0.0}m (fit {5:0.00}, uiScale {6:0.00})",
-                    c.name, rt.rect.width, rt.rect.height, worldH, dist, fit, uiScale));
+                if (l != null) l.LogInfo(string.Format("VRUI: '{0}' {1:0}x{2:0}px -> {3:0.00}m tall at {4:0.0}m (shared scale {5:0.0000})",
+                    c.name, rt.rect.width, rt.rect.height, rt.rect.height * SharedScale(dist), dist, SharedScale(dist)));
             }
             catch { }
         }
@@ -244,11 +243,46 @@ namespace VRKoboldKare
         /// <summary>Live re-apply after a HUD config change.</summary>
         internal void ReapplyHudScale()
         {
+            _sharedScale = -1f;   // config changed — recompute the shared scale
             foreach (var o in _canvasOverrides)
             {
                 if (o.C == null) continue;
                 ApplyHudTransform(o);
             }
+        }
+
+        // ---- virtual screen state ----
+        private float _sharedScale = -1f;
+
+        private float HudDistance()
+        {
+            float hudDistCfg = 3f;
+            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
+            return HudMath.HudFollowDistance(hudDistCfg);
+        }
+
+        /// <summary>ONE px-to-world scale for ALL converted canvases: the
+        /// tallest canvas (the desktop "screen") maps onto the HUD box — the
+        /// fit fraction of the view at the follow distance, times the UI
+        /// scale multiplier. Cached until a canvas/config changes.</summary>
+        private float SharedScale(float dist)
+        {
+            if (_sharedScale > 0f) return _sharedScale;
+            float refH = 1f;
+            foreach (var o in _canvasOverrides)
+            {
+                if (o.C == null) continue;
+                var rt = o.C.GetComponent<RectTransform>();
+                if (rt != null) refH = Mathf.Max(refH, rt.rect.height);
+            }
+            float viewW = VRRenderer.CurrentViewW;
+            float viewH = VRRenderer.CurrentViewH;
+            float fit = HudMath.UiFitFraction(HudWidth(), HudHeight(), viewW, viewH);
+            float uiScale = 1f;
+            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgUIScale != null) uiScale = Mathf.Clamp(_manager.Plugin.cfgUIScale.Value, 0.1f, 4f); } catch (Exception) { }
+            float worldH = 2f * dist * Mathf.Tan(VRRenderer.CurrentVFovDeg * 0.5f * 0.0174533f) * fit * uiScale;
+            _sharedScale = worldH / Mathf.Max(1f, refH);
+            return _sharedScale;
         }
 
         private float HudWidth()
@@ -290,18 +324,17 @@ namespace VRKoboldKare
                 _radialPanel.transform.rotation = headRot;
             }
 
-            // Converted HUD panels: follow the head, face the viewer. The
-            // canvas' front face is its -Z side, so rotate 180° to present it.
-            float hudDistCfg = 3f;
-            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
-            float dist = HudMath.HudFollowDistance(hudDistCfg);
+            // Converted HUD panels: one virtual screen — ALL layers at the
+            // same follow distance (1mm z-stagger kills flicker between
+            // overlapping quads), scaled by the shared px-to-world scale so
+            // they composite exactly like the desktop screen. The canvas'
+            // +Z along the view direction is the READABLE side.
+            float dist = HudDistance();
             foreach (var o in _canvasOverrides)
             {
                 if (o.C == null) continue;
                 var t = o.C.transform;
-                t.position = headPos + headRot * new Vector3(0f, 0f, dist + o.Slot * 0.05f);
-                // No 180° flip: the canvas' +Z along the view direction is
-                // the READABLE side (the flip mirrored the text on X).
+                t.position = headPos + headRot * new Vector3(0f, 0f, dist + o.Slot * 0.001f);
                 t.rotation = headRot;
             }
         }

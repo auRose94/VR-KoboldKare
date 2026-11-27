@@ -126,7 +126,10 @@ namespace VRKoboldKare
                         if (!ReferenceEquals(_m.Plugin, null) && _m.Plugin.cfgMouseSens != null)
                             sens = _m.Plugin.cfgMouseSens.Value;
                         _m.AddYaw(d.x * sens);
-                        _m.AddPitch(d.y * sens);
+                        // Unity X-rotation is positive DOWN (left-handed):
+                        // mouse-up (delta.y > 0) must pitch the view UP, so
+                        // negate. (The 0.4.0 sign was reversed.)
+                        _m.AddPitch(-d.y * sens);
                     }
                     float snap = 45f;
                     if (!ReferenceEquals(_m.Plugin, null) && _m.Plugin.cfgLocoSnapAngle != null)

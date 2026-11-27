@@ -5,6 +5,20 @@ All notable changes to VR-KoboldKare are documented here.
 ## Unreleased (0.4.0 batch, 2026-11-27)
 
 ### Fixed — the playtest round
+- **Mouse Y un-reversed**: Unity X-rotation is positive DOWN (left-handed)
+  — the 0.4.0 pitch layer shipped with the sign flipped, so mouse-up looked
+  down. Negated at both input sites (OpenXR offset layer + keyboard backend
+  synthetic head).
+- **The HUD is a real virtual screen now** (she: "can't see everything
+  cleanly inside a virtual screen"; crosshair 2-4x too big): converted
+  canvases previously each scaled to fill the box INDEPENDENTLY
+  (`worldH / own height`), so a small crosshair canvas rendered giant and
+  the layers never aligned. All canvases now share ONE pixel-to-world scale
+  — the tallest canvas (the desktop "screen") maps onto the HUD box and
+  every other layer keeps its authored proportions — placed at the same
+  follow distance (1mm z-stagger against flicker) with deterministic
+  `sortingOrder` layering (originals restored on teardown). This also makes
+  `VR.UI:Scale` behave as an intuitive box multiplier.
 - **Gate deadlock fixed (found by direct environment probing)**: the toggle
   gate required a rendering OpenXR session, but session creation needs
   main-thread polls (D3D11 device acquisition) that only ran AFTER VR

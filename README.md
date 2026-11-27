@@ -85,6 +85,19 @@ See [docs/CONFIG.md](docs/CONFIG.md) for the full configuration reference.
 > Hand-tracking gestures (pinch = trigger, fist = grab) are the controller-free
 > path. Desktop input always takes over the moment keyboard or mouse is used.
 
+### Runtime support: WiVRn stable vs git
+
+The mod is runtime-agnostic OpenXR 1.1 — **both WiVRn stable and the
+wivrn-full-git nightlies work** (SteamVR too, in principle). Nothing is
+hardcoded to a WiVRn version: capabilities are probed at startup and logged
+(`OpenXR: body tracking (XR_FB_body_tracking): True/False`,
+`system found: ... bodyTracking yes/no`). The one feature that depends on
+the runtime build is **full-body tracking**, which needs
+`XR_FB_body_tracking` (present in recent git builds; when absent, VRBody
+falls back to the procedural mapping automatically — no config change
+needed). If WiVRn changes something under us, the log's ext[] dump + the
+probe lines say exactly what disappeared.
+
 ### Multiplayer coexistence & hardening
 
 With WiVRn down (or any runtime failure), the game launches and plays exactly
