@@ -63,6 +63,10 @@ namespace VRKoboldKare
         {
             var mgr = VRKoboldKarePlugin.VRManager;
             if (mgr == null || !mgr.Enabled) return;
+            // MULTIPLAYER SAFETY: this hook fires for every possessed player on
+            // the client. Only the LOCAL possession may receive the VR move
+            // override — remote players' processing must flow untouched.
+            if (mgr.Possession == null || __instance != mgr.Possession) return;
             if (mgr.Loco == null || mgr.Controller == null) return;
             try
             {
@@ -142,6 +146,12 @@ namespace VRKoboldKare
             {
                 var mgr = VRKoboldKarePlugin.VRManager;
                 if (mgr == null || !mgr.Enabled) return;
+                // MULTIPLAYER SAFETY: Grabber.LateUpdate runs for every player's
+                // grabber on the client (the game syncs grab state via Photon).
+                // Re-anchoring a REMOTE player's held item to OUR view would
+                // yank it across the map every frame — only the LOCAL grabber
+                // gets the view-locked hold.
+                if (mgr.Grabber == null || __instance != mgr.Grabber) return;
                 var input = mgr.Input;
                 if (input == null || !input.FrameValid || !input.Frame.headTracked) return;
 
@@ -358,6 +368,10 @@ namespace VRKoboldKare
             {
                 var mgr = VRKoboldKarePlugin.VRManager;
                 if (mgr == null || !mgr.Enabled) return;
+                // MULTIPLAYER SAFETY: the gaze cone is OUR view — re-picking
+                // closestUsable for a REMOTE player (or an NPC user) with the
+                // local camera would steer their interactions. Local user only.
+                if (mgr.GameUser == null || __instance != mgr.GameUser) return;
                 var input = mgr.Input;
                 if (input == null || !input.FrameValid || !input.Frame.headTracked) return;
 
@@ -374,7 +388,7 @@ namespace VRKoboldKare
 
                 var cam = Camera.main;
                 if (cam == null) return;
-                Vector3 fwd = Quaternion.Euler(0f, mgr.YawOffset, 0f) * input.Frame.headRot * Vector3.forward;
+                Vector3 fwd = mgr.ViewRotation(input.Frame.headRot) * Vector3.forward;
                 Vector3 origin = cam.transform.position;
 
                 GenericUsable best = null;
@@ -414,7 +428,7 @@ namespace VRKoboldKare
             try
             {
                 cam.transform.position = mgr.HeadToWorld(frame.headPos, frame.headRot);
-                cam.transform.rotation = Quaternion.Euler(0f, mgr.YawOffset, 0f) * frame.headRot;
+                cam.transform.rotation = mgr.ViewRotation(frame.headRot);
             }
             catch { }
         }

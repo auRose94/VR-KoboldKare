@@ -32,7 +32,31 @@ namespace VRKoboldKare
         public bool menu;
     }
 
-    /// <summary>One polled VR frame (head + both hands).</summary>
+    /// <summary>One located body joint (Unity coords, app-space like hands).</summary>
+    public struct XrBodyJoint
+    {
+        public bool tracked;
+        public Vector3 position;
+        public Quaternion rotation;
+    }
+
+    /// <summary>Upper-body snapshot from XR_FB_body_tracking (hips → spine →
+    /// chest → head). The DEFAULT joint set has NO knees/feet — legs stay
+    /// procedural in VRBody. Valid only while SlimeVR-style body data streams
+    /// (isActive) — empty frame otherwise.</summary>
+    public struct XrBodyFrame
+    {
+        public bool valid;
+        public float confidence;
+        public XrBodyJoint hips;
+        public XrBodyJoint spineLower;
+        public XrBodyJoint spineMiddle;
+        public XrBodyJoint spineUpper;
+        public XrBodyJoint chest;
+        public XrBodyJoint head;
+    }
+
+    /// <summary>One polled VR frame (head + both hands + body).</summary>
     public struct XrFrame
     {
         public bool valid;         // true if a frame was produced
@@ -41,6 +65,7 @@ namespace VRKoboldKare
         public Quaternion headRot;
         public XrHand left;
         public XrHand right;
+        public XrBodyFrame body;
         public string backend;
         public uint packet;        // increments each poll, for edge detection
     }
@@ -63,6 +88,10 @@ namespace VRKoboldKare
         public static string BackendName { get { return _backend != null ? _backend.Name : "none"; } }
         public static bool Initialized { get { return _backend != null; } }
         internal static OpenXRBackend OpenXR { get { return _backend as OpenXRBackend; } }
+
+        /// <summary>XR_FB_body_tracking tracker exists (real FBT pipeline live
+        /// when a body actually streams — see XrFrame.body.valid).</summary>
+        public static bool BodyTrackingAvailable { get { var xr = OpenXR; return xr != null && xr.BodyTrackingAvailable; } }
 
         private static volatile IVxrBackend _backend;
         private static XrFrame _last;
@@ -138,6 +167,14 @@ namespace VRKoboldKare
             if (_backend != null && _backend is OpenXRBackend) return true; // backend retries internally
             Shutdown();
             return TryInit(preferred, log);
+        }
+
+        /// <summary>Re-anchor the keyboard backend's synthetic head to the game
+        /// camera (VR enable / scene load). No-op on other backends.</summary>
+        public static void ResetKeyboardHead()
+        {
+            var kb = _backend as KeyboardBackend;
+            if (kb != null) kb.ResetHead();
         }
 
         /// <summary>Get the latest polled frame. Returns an invalid frame if no backend.</summary>
@@ -328,6 +365,9 @@ namespace VRKoboldKare
                     extNames.GetRange(i, Math.Min(8, extNames.Count - i)).ToArray()));
             _hasD3D11 = extNames.Contains(XrExt.D3D11);
             _hasHandTracking = extNames.Contains(XrExt.HandTracking);
+            _hasBodyTracking = extNames.Contains(XrExt.BodyTrackingFB);
+            log("OpenXR: body tracking (XR_FB_body_tracking): " + _hasBodyTracking +
+                " — SlimeVR data flows through the WiVRn server when its bridge is connected");
 
             // Create the instance.
             var ci = new XrInstanceCreateInfo { type = XrType.INSTANCE_CREATE_INFO };
@@ -342,33 +382,42 @@ namespace VRKoboldKare
             IntPtr extPtr = IntPtr.Zero;
             try
             {
-                // Always REQUEST d3d11_enable: wineopenxr only advertises it
-                // once a DXVK device exists in-process (true inside the game,
-                // false in bare test exes). If rejected, retry without it and
-                // fall back to an input-only session.
-                string[] want = { XrExt.D3D11 };
-                extPtr = AllocStringArray(want);
-                ci.enabledExtensionCount = 1;
-                ci.enabledExtensionNames = extPtr;
-                r = XrApi.xrCreateInstance(ref ci, out _instance);
-                if (r == XrResultCode.XR_ERROR_EXTENSION_NOT_PRESENT)
+                // REQUEST what the runtime advertised: d3d11_enable first
+                // (wineopenxr only advertises it once a DXVK device exists
+                // in-process — true inside the game, false in bare test exes),
+                // plus body tracking for the SlimeVR pipeline. A fallback
+                // ladder drops the optional tail on EXTENSION_NOT_PRESENT,
+                // ending in an input-only session.
+                var wantList = new List<string>();
+                if (_hasD3D11) wantList.Add(XrExt.D3D11);
+                if (_hasBodyTracking) wantList.Add(XrExt.BodyTrackingFB);
+
+                while (true)
                 {
-                    FreeStringArray(extPtr, 1);
-                    extPtr = IntPtr.Zero;
-                    ci.enabledExtensionCount = 0;
-                    ci.enabledExtensionNames = IntPtr.Zero;
-                    _hasD3D11 = false;
-                    log("OpenXR: XR_KHR_d3d11_enable not accepted — input-only session (no headset rendering).");
+                    if (extPtr != IntPtr.Zero) { FreeStringArray(extPtr, (int)ci.enabledExtensionCount); extPtr = IntPtr.Zero; }
+                    ci.enabledExtensionCount = (uint)wantList.Count;
+                    extPtr = wantList.Count > 0 ? AllocStringArray(wantList.ToArray()) : IntPtr.Zero;
+                    ci.enabledExtensionNames = extPtr;
                     r = XrApi.xrCreateInstance(ref ci, out _instance);
-                }
-                else
-                {
-                    _hasD3D11 = true;
+                    if (XrResultCode.Ok(r))
+                    {
+                        _hasD3D11 = wantList.Contains(XrExt.D3D11);
+                        _hasBodyTracking = wantList.Contains(XrExt.BodyTrackingFB);
+                        break;
+                    }
+                    if (r == XrResultCode.XR_ERROR_EXTENSION_NOT_PRESENT && wantList.Count > 0)
+                    {
+                        log("OpenXR: instance create rejected wanted extensions (" +
+                            XrResultCode.Name(r) + ") — retrying without '" + wantList[wantList.Count - 1] + "'");
+                        wantList.RemoveAt(wantList.Count - 1);
+                        continue;
+                    }
+                    break;   // hard failure — handled below
                 }
             }
             finally
             {
-                if (extPtr != IntPtr.Zero) FreeStringArray(extPtr, 1);
+                if (extPtr != IntPtr.Zero) FreeStringArray(extPtr, (int)ci.enabledExtensionCount);
             }
             if (!XrResultCode.Ok(r))
             {
@@ -464,12 +513,18 @@ namespace VRKoboldKare
                 {
                     _systemId = sys;
                     var sp = new XrSystemProperties { type = XrType.SYSTEM_PROPERTIES };
+                    var bodyProps = new XrSystemBodyTrackingPropertiesFB { type = XrType.SYSTEM_BODY_TRACKING_PROPERTIES_FB };
+                    // Stack-local: &local in unsafe code is already fixed — a
+                    // fixed statement on it is a compile error (CS0213).
+                    sp.next = (IntPtr)(&bodyProps);   // chain FB body properties into the query
                     lock (_xrLock) { XrApi.xrGetSystemProperties(_instance, _systemId, ref sp); }
+                    _bodySystemSupports = bodyProps.supportsBodyTracking != 0;
                     string sysName;
                     fixed (byte* p = sp.systemName) sysName = XrStr.Read(p, 256);
                     Log("system found: '" + sysName +
                         "' maxSwapchain " + sp.graphicsProperties.maxSwapchainImageWidth + "x" +
-                        sp.graphicsProperties.maxSwapchainImageHeight);
+                        sp.graphicsProperties.maxSwapchainImageHeight +
+                        ", bodyTracking " + (_bodySystemSupports ? "yes" : "no"));
                 }
                 else if (r == XrResultCode.XR_ERROR_FORM_FACTOR_UNAVAILABLE)
                 {
@@ -632,7 +687,62 @@ namespace VRKoboldKare
             if (!CreateSpaces()) return;
             if (!CreateActions()) return;
             if (_hasHandTracking) CreateHandTrackers();
+            if (_hasBodyTracking) CreateBodyTracker();
         }
+
+        /// <summary>XR_FB_body_tracking: hips→spine→chest→head poses for the
+        /// FBT pipeline. WiVRn feeds this from a connected SlimeVR server
+        /// (its bridge), so the extension being advertised + the system
+        /// supporting it + tracker creation all succeeding is the signal that
+        /// REAL body data will stream. Otherwise VRBody stays procedural.</summary>
+        private void CreateBodyTracker()
+        {
+            lock (_xrLock)
+            {
+                IntPtr pCreate = IntPtr.Zero, pLocate = IntPtr.Zero, pDestroy = IntPtr.Zero;
+                int r1 = XrApi.xrGetInstanceProcAddr(_instance, "xrCreateBodyTrackerFB", out pCreate);
+                int r2 = XrApi.xrGetInstanceProcAddr(_instance, "xrLocateBodyJointsFB", out pLocate);
+                int r3 = XrApi.xrGetInstanceProcAddr(_instance, "xrDestroyBodyTrackerFB", out pDestroy);
+                if (!XrResultCode.Ok(r1) || !XrResultCode.Ok(r2) || !XrResultCode.Ok(r3) ||
+                    pCreate == IntPtr.Zero || pLocate == IntPtr.Zero || pDestroy == IntPtr.Zero)
+                {
+                    Log("body tracking proc resolution failed: create " + XrResultCode.Name(r1) +
+                        ", locate " + XrResultCode.Name(r2) + ", destroy " + XrResultCode.Name(r3));
+                    return;
+                }
+                var create = (XrApi.CreateBodyTrackerFB_t)Marshal.GetDelegateForFunctionPointer(
+                    pCreate, typeof(XrApi.CreateBodyTrackerFB_t));
+                var locate = (XrApi.LocateBodyJointsFB_t)Marshal.GetDelegateForFunctionPointer(
+                    pLocate, typeof(XrApi.LocateBodyJointsFB_t));
+                var destroy = (XrApi.DestroyBodyTrackerFB_t)Marshal.GetDelegateForFunctionPointer(
+                    pDestroy, typeof(XrApi.DestroyBodyTrackerFB_t));
+
+                if (!_bodySystemSupports)
+                {
+                    Log("body tracking skipped: system properties report no body-tracking support");
+                    return;
+                }
+                var ci = new XrBodyTrackerCreateInfoFB
+                {
+                    type = XrType.BODY_TRACKER_CREATE_INFO_FB,
+                    bodyJointSet = XrEnums.BODY_JOINT_SET_DEFAULT_FB,   // upper body — no knees/feet exist here
+                };
+                int rb = create(_session, ref ci, out _bodyTracker);
+                if (!XrResultCode.Ok(rb))
+                {
+                    Log("body tracker creation failed: " + XrResultCode.Name(rb) + " — VRBody stays procedural");
+                    _bodyTracker = 0;
+                    return;
+                }
+                _locateBodyJoints = locate;
+                _destroyBodyTracker = destroy;
+                Log("body tracker created (XR_FB_body_tracking via proc-addr) — full-body pipeline live when SlimeVR streams");
+            }
+        }
+
+        /// <summary>True when the FB body tracker exists (pose data may still be
+        /// idle until a body is being tracked — XrBodyFrame.valid covers that).</summary>
+        internal bool BodyTrackingAvailable { get { return _bodyTracker != 0; } }
 
         private void CreateHandTrackers()
         {
@@ -1150,6 +1260,7 @@ namespace VRKoboldKare
 
             f.left = PollHand(true, t);
             f.right = PollHand(false, t);
+            f.body = LocateBody(t);
 
             // Input probes: once at 2s, then every 10s for a minute — WiVRn's
             // interaction profile attach is known to lag several seconds
@@ -1270,6 +1381,68 @@ namespace VRKoboldKare
         {
             float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
             return (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        // ---------- XR_FB_body_tracking poll ----------
+        // Joints locate in APP space (floor-origin, like the head/hand spaces)
+        // at the frame's predicted display time; the same Z-flip conversions
+        // apply. VRBody maps them onto the kobold post-animation.
+
+        private bool _bodyIdleLogged;
+
+        private XrBodyFrame LocateBody(long t)
+        {
+            var bf = new XrBodyFrame();
+            if (_bodyTracker == 0 || _locateBodyJoints == null) return bf;
+
+            unsafe
+            {
+                XrBodyJointLocationFB* joints = stackalloc XrBodyJointLocationFB[(int)XrEnums.BODY_JOINT_COUNT_FB];
+                var li = new XrBodyJointsLocateInfoFB
+                {
+                    type = XrType.BODY_JOINTS_LOCATE_INFO_FB,
+                    baseSpace = _appSpace,
+                    time = t,
+                };
+                var locs = new XrBodyJointLocationsFB
+                {
+                    type = XrType.BODY_JOINT_LOCATIONS_FB,
+                    jointCount = XrEnums.BODY_JOINT_COUNT_FB,
+                    jointLocations = (IntPtr)joints,
+                };
+                if (!XrResultCode.Ok(_locateBodyJoints(_bodyTracker, ref li, ref locs))) return bf;
+
+                if (locs.isActive == 0)
+                {
+                    if (!_bodyIdleLogged)
+                    {
+                        _bodyIdleLogged = true;
+                        Log("body tracker idle (no body being tracked — connect SlimeVR to the WiVRn server)");
+                    }
+                    return bf;
+                }
+                _bodyIdleLogged = false;
+
+                bf.valid = true;
+                bf.confidence = locs.confidence;
+                FillJoint(ref bf.hips, joints, XrEnums.BODY_JOINT_HIPS_FB);
+                FillJoint(ref bf.spineLower, joints, XrEnums.BODY_JOINT_SPINE_LOWER_FB);
+                FillJoint(ref bf.spineMiddle, joints, XrEnums.BODY_JOINT_SPINE_MIDDLE_FB);
+                FillJoint(ref bf.spineUpper, joints, XrEnums.BODY_JOINT_SPINE_UPPER_FB);
+                FillJoint(ref bf.chest, joints, XrEnums.BODY_JOINT_CHEST_FB);
+                FillJoint(ref bf.head, joints, XrEnums.BODY_JOINT_HEAD_FB);
+            }
+            return bf;
+        }
+
+        private static unsafe void FillJoint(ref XrBodyJoint j, XrBodyJointLocationFB* joints, int idx)
+        {
+            var loc = joints[idx];
+            uint want = XrEnums.SPACE_LOCATION_ORIENTATION_VALID_BIT | XrEnums.SPACE_LOCATION_POSITION_VALID_BIT;
+            if ((loc.locationFlags & want) != want) return;
+            j.tracked = true;
+            j.position = ToUnityPos(loc.pose.position);
+            j.rotation = ToUnityRot(loc.pose.orientation);
         }
 
         private XrActionStateGetInfo GetInfo(string action, ulong subaction)
@@ -1477,12 +1650,17 @@ namespace VRKoboldKare
         private int _acquireFailLog;
         private int _syncFailLog;
         private bool _hasHandTracking;
+        private bool _hasBodyTracking;
+        private bool _bodySystemSupports;
         private int _syncFlaps;
         private bool _wasDisplayed;
         private ulong _handTrackerL, _handTrackerR;
         private float _pinchL, _pinchR, _gripL, _gripR;   // gesture hysteresis states
         private XrApi.LocateHandJointsEXT_t _locateHandJoints;
         private XrApi.DestroyHandTrackerEXT_t _destroyHandTracker;
+        private ulong _bodyTracker;
+        private XrApi.LocateBodyJointsFB_t _locateBodyJoints;
+        private XrApi.DestroyBodyTrackerFB_t _destroyBodyTracker;
 
         internal bool AcquireAndWait(ulong swapchain, out uint index)
         {
@@ -1565,6 +1743,7 @@ namespace VRKoboldKare
                 _viewSpace = _appSpace = 0;
                 if (_handTrackerL != 0 && _destroyHandTracker != null) { _destroyHandTracker(_handTrackerL); _handTrackerL = 0; }
                 if (_handTrackerR != 0 && _destroyHandTracker != null) { _destroyHandTracker(_handTrackerR); _handTrackerR = 0; }
+                if (_bodyTracker != 0 && _destroyBodyTracker != null) { _destroyBodyTracker(_bodyTracker); _bodyTracker = 0; }
                 _actions.Clear();
                 if (_actionSet != 0) { XrApi.xrDestroyActionSet(_actionSet); _actionSet = 0; }
             }
@@ -1588,13 +1767,30 @@ namespace VRKoboldKare
     }
 
     /// <summary>
-    /// Development fallback: emulates VR state from keyboard + mouse + game camera.
-    /// Lets you test the whole pipeline on a monitor without a headset.
+    /// Development fallback: emulates VR state from a synthetic head (mouse
+    /// yaw/pitch) anchored to the player's body. Lets you test and PLAY the
+    /// whole VR pipeline on a monitor without a headset — the desktop preview
+    /// shows the rig view, and VRInput's desktop mapping (LMB grab, RMB use,
+    /// WASD, hotkeys) drives everything else.
+    ///
+    /// v0.4.0 rewrite. The old version polled LEGACY UnityEngine.Input (throws
+    /// on this new-Input-System host — VRInput.Update died every frame), fed
+    /// the CAMERA's pose back as the head (feedback loop: camera → poll → aim
+    /// → camera), and marked the synthetic hands "tracked" with world-space
+    /// positions that HeadToWorld then mis-projected. Now: the synthetic head
+    /// is independent of the camera, hands are untracked (UpdateHands parks
+    /// the grabber views at the game camera — desktop-style grabbing), and
+    /// there are no synthetic buttons — VRInput's desktop-authority mapping is
+    /// the single input path, with the desktop hotkeys covering the actions
+    /// the dead controllers would have done.
     /// </summary>
     internal sealed class KeyboardBackend : IVxrBackend
     {
         public string Name { get { return "keyboard"; } }
         private uint _packet = 0;
+        private bool _headInit;
+        private float _yaw;
+        private float _pitch;
 
         public bool Init(Action<string> log)
         {
@@ -1602,9 +1798,13 @@ namespace VRKoboldKare
             return true;
         }
 
-        private bool Key(KeyCode k)
+        /// <summary>Re-anchor the synthetic head to the game camera and level
+        /// the pitch (VR enable / scene load) so the first frame doesn't snap
+        /// the view to a stale yaw.</summary>
+        internal void ResetHead()
         {
-            return Input.GetKey(k);
+            _headInit = false;
+            _pitch = 0f;
         }
 
         public void Poll(out XrFrame frame)
@@ -1616,45 +1816,52 @@ namespace VRKoboldKare
 
             Camera cam = Camera.main;
             if (cam == null) cam = UnityEngine.Object.FindObjectOfType<Camera>();
-            if (cam != null)
+            if (!_headInit)
             {
-                frame.headTracked = true;
-                frame.headPos = cam.transform.position;
-                frame.headRot = cam.transform.rotation;
+                _headInit = true;
+                _pitch = 0f;
+                if (cam != null) _yaw = cam.transform.eulerAngles.y;
             }
 
-            Vector3 headPos = frame.headPos;
-            Quaternion headRot = frame.headRot;
+            // Mouse look into the synthetic head (new Input System only —
+            // legacy Input THROWS on this host). Pitch clamps like an FPS.
+            if (Application.isFocused)
+            {
+                var mouse = UnityEngine.InputSystem.Mouse.current;
+                if (mouse != null)
+                {
+                    var d = mouse.delta.ReadValue();
+                    float sens = 0.15f;
+                    try
+                    {
+                        var mgr = VRKoboldKarePlugin.VRManager;
+                        if (mgr != null && !ReferenceEquals(mgr.Plugin, null) && mgr.Plugin.cfgMouseSens != null)
+                            sens = mgr.Plugin.cfgMouseSens.Value;
+                    }
+                    catch { }
+                    _yaw += d.x * sens;
+                    _pitch = Mathf.Clamp(_pitch + d.y * sens, -85f, 85f);
+                }
+            }
 
-            var lh = new XrHand();
-            lh.tracked = true;
-            lh.position = headPos + headRot * new Vector3(-0.45f, -0.12f, -0.5f);
-            lh.rotation = headRot;
-            lh.stick = new Vector2(
-                (Key(KeyCode.D) ? 1f : 0f) - (Key(KeyCode.A) ? 1f : 0f),
-                (Key(KeyCode.W) ? 1f : 0f) - (Key(KeyCode.S) ? 1f : 0f));
-            lh.trigger = Key(KeyCode.Q) ? 1f : 0f;
-            lh.grip = 0f;
-            lh.a = Key(KeyCode.Alpha1);
-            lh.b = Key(KeyCode.Alpha2);
-            lh.x = Key(KeyCode.Alpha3);
-            lh.y = Key(KeyCode.Alpha4);
-            lh.menu = false;
-            frame.left = lh;
+            frame.headTracked = cam != null;
+            // Rig offset: HeadToWorld anchors this onto the player's body at
+            // the avatar's ACTUAL head-bone height (neck lock — the old magic
+            // 1.2m hovered over the kobold), so the rig rides movement, crouch
+            // and ghost flight with the view pivoting at the neck.
+            float eyeH = 1.2f;
+            try
+            {
+                var mgr = VRKoboldKarePlugin.VRManager;
+                if (mgr != null) eyeH = mgr.KeyboardEyeHeight;
+            }
+            catch { }
+            frame.headPos = new Vector3(0f, eyeH, 0f);
+            frame.headRot = Quaternion.Euler(_pitch, _yaw, 0f);
 
-            var rh = new XrHand();
-            rh.tracked = true;
-            rh.position = headPos + headRot * new Vector3(0.45f, -0.12f, -0.5f);
-            rh.rotation = headRot;
-            rh.trigger = Input.GetMouseButton(0) ? 1f : 0f;
-            rh.grip = Key(KeyCode.LeftShift) ? 1f : 0f;
-            rh.stick = new Vector2(Input.GetAxis("Mouse X") * 0.02f, Input.GetAxis("Mouse Y") * 0.02f);
-            rh.a = Key(KeyCode.R);
-            rh.b = Key(KeyCode.C);
-            rh.x = Key(KeyCode.T);
-            rh.y = Key(KeyCode.G);
-            rh.menu = Key(KeyCode.Escape);
-            frame.right = rh;
+            // Hands untracked on purpose — see the class comment.
+            frame.left = new XrHand();
+            frame.right = new XrHand();
         }
 
         public void Haptic(bool left, float amplitude, int durationMs)

@@ -101,6 +101,12 @@ run_suite math \
   src/XrMath.cs \
   src/HudMath.cs
 
+# uimath: options-menu modded-slot layout + screenshot file names.
+run_suite uimath \
+  tests/test_uimath.cs \
+  -- \
+  src/UiMath.cs
+
 printf '\n'
 if [ $FAILED -eq 0 ]; then
   echo "ALL SUITES PASSED"

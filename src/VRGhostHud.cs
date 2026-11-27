@@ -214,7 +214,7 @@ namespace VRKoboldKare
 
             var f = input.Frame;
             Vector3 headPos = _m.HeadToWorld(f.headPos, f.headRot);
-            Quaternion headRot = Quaternion.Euler(0f, _m.YawOffset, 0f) * f.headRot;
+            Quaternion headRot = _m.ViewRotation(f.headRot);
 
             if (_panel != null)
             {

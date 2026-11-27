@@ -85,6 +85,19 @@ See [docs/CONFIG.md](docs/CONFIG.md) for the full configuration reference.
 > Hand-tracking gestures (pinch = trigger, fist = grab) are the controller-free
 > path. Desktop input always takes over the moment keyboard or mouse is used.
 
+### Multiplayer coexistence & hardening
+
+With WiVRn down (or any runtime failure), the game launches and plays exactly
+as vanilla — VR init runs on a background thread, degrades to the keyboard
+backend, and per-frame circuit breakers stand down anything that throws.
+`[VR.General] Enabled = false` is the hard kill switch.
+
+Online, kkvr announces itself per player via Photon properties
+(`vrkk_v/head/hands/fbt`): two kkvr users recognize each other automatically
+(logged on arrival), and all VR overrides are scoped to the LOCAL player only —
+remote players' grabbers, interactions, and movement are never touched.
+The capability flags are the handshake for upcoming head/hand/FBT pose streams.
+
 | Action | VR Input |
 |--------|----------|
 | Move | Left thumbstick |
@@ -107,6 +120,30 @@ See [docs/CONFIG.md](docs/CONFIG.md) for the full configuration reference.
 | Chat (stub) | Menu + X |
 | Ghost drift (while eaten) | Left stick / right stick ↑↓ |
 | **Toggle VR on/off** | **HOME** (F8 also works) |
+
+### Desktop (headset off — the debug/play mode)
+
+Mouse look steers the VR rig itself (yaw **and** pitch); the game's own
+desktop controls (WASD, E, Space, mouse buttons) keep working underneath, so
+the whole VR pipeline — head-locked camera, world HUD, grabbing, ghost mode —
+is playable without a headset.
+
+**Desktop preview**: with VR enabled, the game window shows the VR view (the
+game's own menus draw on top of it), so you can debug with the headset off.
+Screenshots capture exactly that view.
+
+Extra hotkeys (all configurable `Unity KeyCode` strings; letter keys by
+default because the F-row often never reaches Unity under Proton and
+KK-LLM-NPC already claims Insert/PageUp/PageDown/End):
+
+| Action | Key |
+|--------|-----|
+| Screenshot (JPG → `BepInEx/screenshots/`) | **P** |
+| Camera cycle (FP → TP → free cam) | **B** |
+| Equipment radial menu | **H** |
+| Ragdoll toggle | **K** |
+| Precision-grab (pin) toggle | **J** |
+| Snap turn left / right | **[** / **]** |
 
 ## Building
 

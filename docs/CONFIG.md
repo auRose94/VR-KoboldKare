@@ -84,3 +84,50 @@ All configuration is stored in `<KoboldKare>/BepInEx/config/com.vr.koboldkare.cf
 | `VR.Network:SyncBody` | bool | `true` | Sync body position to other players. |
 | `VR.Network:SyncHands` | bool | `false` | Sync hand positions to other players. |
 | `VR.Network:OwnershipRetry` | float | `3.0` | Seconds between PhotonView ownership re-assertion. |
+
+## Render / Desktop Preview
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `VR.Render:DesktopPreview` | bool | `true` | Show the VR view in the desktop window. With a session: mirrors the exact eye texture (under the game's menus). Headset-off: the window IS the VR rig view (head-locked camera, world HUD) for debugging. Toggling this requires a VR disable/enable. |
+
+## Desktop Keys (`VR.DesktopKeys`)
+
+Letter-key defaults: the F-row often never reaches Unity under Proton, and
+KK-LLM-NPC already claims Insert/PageUp/PageDown/End. All values are Unity
+KeyCode names; changes hot-reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `VR.DesktopKeys:ScreenshotKey` | string | `P` | Save a JPG of the VR view to `BepInEx/screenshots/`. Works with the headset off. |
+| `VR.DesktopKeys:CameraCycleKey` | string | `B` | Cycle first person → third person → free cam. |
+| `VR.DesktopKeys:RadialKey` | string | `H` | Toggle the equipment radial menu. |
+| `VR.DesktopKeys:RagdollKey` | string | `K` | Toggle ragdoll. |
+| `VR.DesktopKeys:PrecisionModeKey` | string | `J` | Toggle precision-grab (pin) mode. |
+
+Also see `VR.Locomotion:MouseYawSensitivity` — now drives yaw AND pitch for
+the desktop-fallback look.
+
+## Body Tracking (`VR.Body`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `VR.Body:BodyFollowXZ` | float | `0.5` | Master FBT switch: fraction of the camera's horizontal drift the hips follow. `0` disables body mapping entirely. |
+| `VR.Body:BodyFollowY` | float | `0.4` | Procedural mode: fraction of the camera height the hips keep above the floor (physical crouch = kobold crouch). |
+| `VR.Body:BodyMaxOffset` | float | `1.0` | Max hips offset in meters (clamps lean AND glitched tracker frames). |
+| `VR.Body:TrackerStrength` | float | `0.8` | How strongly `XR_FB_body_tracking` (SlimeVR via WiVRn) drives hips/spine/chest. `0` = procedural only. |
+| `VR.Body:FeetFollow` | float | `0.5` | Procedural mode: fraction of the hips' drift the feet mirror (the FB body joint set has no knees/feet — legs are always procedural). |
+
+## Networking (`VR.Net` — no config file keys)
+
+VR presence is announced automatically as Photon player properties
+(`vrkk_v`/`vrkk_head`/`vrkk_hands`/`vrkk_fbt`) on VR enable/disable and room
+join. Pose broadcast (head/hands/hips) runs at 10Hz unreliable on event code
+`'V'` while VR is enabled in a room; other kkvr clients render the remote
+player's rig as hue-tinted markers. Vanilla clients and other mods ignore all
+of it.
+
+`VR.UI:Scale` multiplies the HUD box (0.25 = quarter-size UI); every canvas
+conversion logs its numbers, and every options-tab value change logs
+`config Section:Key set to value (live)` — config edits apply immediately
+(hot-reload effects fire from SettingChanged).

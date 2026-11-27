@@ -18,7 +18,7 @@ namespace VRKoboldKare
     /// BepInEx plugin entry point. Manages config, lifecycle, scene gating,
     /// and Harmony patch application. Follows the KK-LLM-NPC pattern.
     /// </summary>
-    [BepInPlugin("com.vr.koboldkare", "VRKoboldKare", "0.3.0")]
+    [BepInPlugin("com.vr.koboldkare", "VRKoboldKare", "0.4.0")]
     public class VRKoboldKarePlugin : BaseUnityPlugin
     {
         /// <summary>Shared logger accessible from all subsystems.</summary>
@@ -85,11 +85,19 @@ namespace VRKoboldKare
         internal ConfigEntry<float>   cfgBodyFollowXZ;
         internal ConfigEntry<float>   cfgBodyFollowY;
         internal ConfigEntry<float>   cfgBodyMaxOffset;
+        internal ConfigEntry<float>   cfgBodyTrackerStrength;
+        internal ConfigEntry<float>   cfgBodyFeetFollow;
         internal ConfigEntry<bool>    cfgOptionsMenuTab;
         internal ConfigEntry<string>  cfgRenderMode;
         internal ConfigEntry<float>   cfgEyeScale;
         internal ConfigEntry<bool>    cfgFlipY;
         internal ConfigEntry<bool>    cfgHidePlayerBody;
+        internal ConfigEntry<bool>    cfgDesktopPreview;
+        internal ConfigEntry<string>  cfgScreenshotKey;
+        internal ConfigEntry<string>  cfgCameraCycleKey;
+        internal ConfigEntry<string>  cfgRadialKey;
+        internal ConfigEntry<string>  cfgRagdollKey;
+        internal ConfigEntry<string>  cfgPrecisionKey;
 
         private void Awake()
         {
@@ -119,7 +127,8 @@ namespace VRKoboldKare
             cfgSnapRight = Config.Bind("VR.Locomotion", "SnapTurnRightKey", "RightBracket",
                 "Snap turn right key (Unity KeyCode name).");
             cfgMouseSens = Config.Bind("VR.Locomotion", "MouseYawSensitivity", 0.15f,
-                "Degrees of view yaw per mouse pixel while VR is on (seated fallback rotation).");
+                "Degrees of view yaw AND pitch per mouse pixel while VR is on (desktop fallback look; " +
+                "the headset provides look when worn — this layer is for seated/headset-off play).");
             cfgHudWidth = Config.Bind("VR.UI", "HudWidth", 900f,
                 "Virtual-pixel width of the UI panel in the headset view — the HUD scales to fit inside it (with HudHeight). Shrink both to tighten the UI toward the center.");
             cfgHudHeight = Config.Bind("VR.UI", "HudHeight", 600f,
@@ -132,6 +141,10 @@ namespace VRKoboldKare
                 "EXPERIMENTAL: fraction of the camera height the avatar's hips keep above the floor (physical crouch = kobold crouch).");
             cfgBodyMaxOffset = Config.Bind("VR.Body", "BodyMaxOffset", 1.0f,
                 "Max horizontal hips offset in meters (clamps the visual lean).");
+            cfgBodyTrackerStrength = Config.Bind("VR.Body", "TrackerStrength", 0.8f,
+                "How strongly XR_FB_body_tracking (SlimeVR via WiVRn) drives the hips/spine/chest. 0 = ignore trackers, procedural mapping only.");
+            cfgBodyFeetFollow = Config.Bind("VR.Body", "FeetFollow", 0.5f,
+                "Procedural (no-tracker) mode: fraction of the hips' lean drift that the feet mirror, so the legs lean with the body instead of splitting at the waist.");
             cfgOptionsMenuTab = Config.Bind("VR.UI", "OptionsMenuTab", true,
                 "Add 'KK VR' tabs to the game's options menu (main menu + in-game pause), driven by the game's own settings framework. Edits apply live and write to this config file.");
             cfgLocoSmoothSpeed = Config.Bind("VR.Locomotion", "SmoothSpeed", 2.0f,
@@ -211,6 +224,22 @@ namespace VRKoboldKare
             cfgHidePlayerBody = Config.Bind("VR.Render", "HidePlayerBody", false,
                 "Hide your kobold's body mesh in first person. Off by default — the body is visible; " +
                 "held items always stay visible either way.");
+            cfgDesktopPreview = Config.Bind("VR.Render", "DesktopPreview", true,
+                "Show the VR view in the desktop window: with a session it mirrors the exact eye texture, " +
+                "headset-off it renders the VR rig (head-locked camera, world HUD) into the window so you can " +
+                "debug without wearing it. The game's own menus draw on top.");
+            // Letter-key defaults: the F-row often never reaches Unity under
+            // Proton (README) and KK-LLM-NPC claims Insert/PageUp/PageDown/End.
+            cfgScreenshotKey = Config.Bind("VR.DesktopKeys", "ScreenshotKey", "P",
+                "Save a PNG of the VR view to BepInEx/screenshots/ (Unity KeyCode name; works with the headset off).");
+            cfgCameraCycleKey = Config.Bind("VR.DesktopKeys", "CameraCycleKey", "B",
+                "Cycle first person → third person → free cam (Unity KeyCode name).");
+            cfgRadialKey = Config.Bind("VR.DesktopKeys", "RadialKey", "H",
+                "Toggle the equipment radial menu (Unity KeyCode name).");
+            cfgRagdollKey = Config.Bind("VR.DesktopKeys", "RagdollKey", "K",
+                "Toggle ragdoll (Unity KeyCode name).");
+            cfgPrecisionKey = Config.Bind("VR.DesktopKeys", "PrecisionModeKey", "J",
+                "Toggle precision-grab (pin) mode (Unity KeyCode name).");
 
             // ---- initialize VR input bridge (SteamVR / OpenXR / keyboard fallback) ----
             OptionsMenuTab.Ensure(this);
@@ -255,7 +284,7 @@ namespace VRKoboldKare
             _vrManager = vrObj.AddComponent<VRManager>();
             _vrManager.Initialize(this);
 
-            Logger.LogInfo("VR-KoboldKare v0.3.0 loaded. Enable VR in-game or via config.");
+            Logger.LogInfo("VR-KoboldKare v0.4.0 loaded. Enable VR in-game or via config.");
         }
 
         /// <summary>
@@ -322,7 +351,7 @@ namespace VRKoboldKare
             try
             {
                 var key = e.ChangedSetting.Definition.Key;
-                if (key == "HudDistance" || key == "HudWidth" || key == "HudHeight")
+                if (key == "HudDistance" || key == "HudWidth" || key == "HudHeight" || key == "Scale")
                 {
                     var mgr = VRManager;
                     mgr?.UI?.ReapplyHudScale();

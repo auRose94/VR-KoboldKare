@@ -54,6 +54,50 @@ namespace VRKoboldKare
         internal float YawOffset { get { return _yawOffset; } }
         internal void AddYaw(float deg) { _yawOffset += deg; }
 
+        // Mouse pitch layer: with a headset on you look physically; with the
+        // headset off (or a dead HMD axis) the mouse owns vertical look too.
+        // Clamped — the composed aim clamps again where it's used.
+        private float _pitchOffset;
+        internal float PitchOffset { get { return _pitchOffset; } }
+        internal void AddPitch(float deg) { _pitchOffset = Mathf.Clamp(_pitchOffset + deg, -85f, 85f); }
+
+        /// <summary>The full view rotation: yaw layer · HEAD · pitch layer.
+        /// The pitch layer composes on the head's LOCAL X axis — the old
+        /// Euler(pitch, yaw, 0) · headRot form pitched about the WORLD X after
+        /// the yaw layer, which read as ROLL whenever the head was turned
+        /// (0.4.0 playtest). Single source of truth: camera snaps, aim,
+        /// hands, HUD panels, gaze cone all use this.</summary>
+        internal Quaternion ViewRotation(Quaternion headRot)
+        {
+            return Quaternion.Euler(0f, _yawOffset, 0f) * headRot * Quaternion.Euler(_pitchOffset, 0f, 0f);
+        }
+
+        // Neck lock: the desktop (headset-off) rig's camera sits at the
+        // avatar's ACTUAL head-bone height above the body — not a magic
+        // 1.2m — so the view pivots at the neck instead of hovering over
+        // the kobold. Cached 0.5s (animator queries aren't free).
+        private float _kbEyeHeight = 1.2f;
+        private float _kbEyeAt;
+        internal float KeyboardEyeHeight
+        {
+            get
+            {
+                if (Time.unscaledTime >= _kbEyeAt)
+                {
+                    _kbEyeAt = Time.unscaledTime + 0.5f;
+                    try
+                    {
+                        var head = FindHeadBone();
+                        var body = Controller != null ? Controller.body : (Kobold != null ? Kobold.body : null);
+                        if (head != null && body != null)
+                            _kbEyeHeight = Mathf.Max(0.3f, head.position.y - body.position.y);
+                    }
+                    catch (Exception) { }
+                }
+                return _kbEyeHeight;
+            }
+        }
+
         /// <summary>INPUT AUTHORITY: desktop (keyboard+mouse) or controllers.
         /// Flips the moment either side produces input — controllers are used
         /// the instant they generate anything, and the moment the keyboard or
@@ -90,6 +134,8 @@ namespace VRKoboldKare
             Plugin = plugin;
             gameObject.name = "VRKoboldKare_Manager";
             SceneManager.sceneLoaded += OnSceneLoaded;
+            VRNet.Initialize();                                       // pose-event receive handler
+            gameObject.AddComponent<VRRemoteRigs>().Initialize(this);  // remote VR marker rigs
         }
 
         private void OnDestroy()
@@ -109,6 +155,18 @@ namespace VRKoboldKare
         public void EnableVR()
         {
             if (Enabled) return;
+            // The hard kill-switch: [VR.General] Enabled = false makes the
+            // hotkeys no-ops so a broken headset stack can never be toggled
+            // into the game by reflex (config-file off switch).
+            try
+            {
+                if (!ReferenceEquals(Plugin, null) && Plugin.cfgEnabled != null && !Plugin.cfgEnabled.Value)
+                {
+                    Log("VR is disabled by config (VR.General:Enabled=false) — hotkey ignored");
+                    return;
+                }
+            }
+            catch (Exception) { }
             Log("enabling VR...");
 
             // Mono mode paints the desktop window black and it's easy to lose
@@ -144,11 +202,13 @@ namespace VRKoboldKare
             SpawnHandTransforms();
             if (!ReferenceEquals(Plugin, null) && Plugin.cfgHidePlayerBody != null && Plugin.cfgHidePlayerBody.Value)
                 PrepareHeadRenderers();
+            VRXR.ResetKeyboardHead();   // synthetic head re-anchors to the camera
             Enabled = true;
             _offsetCaptured = false;
 
             InitSubsystems();
-            Log("VR enabled. Backend: " + VRXR.BackendName);
+            VRNet.SetVR(true, true, VRXR.BackendName == "openxr", VRXR.BodyTrackingAvailable);   // multiplayer presence
+            Log("VR enabled. Backend: " + VRXR.BackendName + (VRXR.BodyTrackingAvailable ? " (FBT pipeline live)" : ""));
         }
 
         public void DisableVR()
@@ -191,6 +251,7 @@ namespace VRKoboldKare
             Cursor.visible = true;
 
             Enabled = false;
+            VRNet.SetVR(false, false, false, false);   // retract multiplayer presence
             Log("VR disabled.");
         }
         private bool FindPlayer()
@@ -314,7 +375,26 @@ namespace VRKoboldKare
         // survives the Addressables bootstrap that kills BepInEx_Manager at
         // t=0 (the KK-LLM-NPC canary lesson) — the plugin component's Update
         // never ticks on this host.
+        //
+        // HARDENING (circuit breaker): this tick runs for the whole session,
+        // VR on or off — one throwing game-API change must not spam exceptions
+        // every frame. After 30 consecutive throws the tick stops (logged),
+        // keeping the game playable; the config file remains the surface.
+        private int _updateStrikes;
+
         private void Update()
+        {
+            if (_updateStrikes >= 30) return;
+            try { UpdateBody(); _updateStrikes = 0; }
+            catch (System.Exception e)
+            {
+                _updateStrikes++;
+                if (_updateStrikes == 1 || _updateStrikes % 300 == 0)
+                    Log("manager tick threw (" + _updateStrikes + " consecutive) — breaker trips at 30: " + e.Message);
+            }
+        }
+
+        private void UpdateBody()
         {
             if (!_hotkeyLogged)
             {
@@ -323,6 +403,7 @@ namespace VRKoboldKare
             }
             VRKoboldKarePlugin.ConsumeReloadAndApply();
             OptionsMenuTab.Tick();   // best-effort: injects the options tabs once the menu prefab exists
+            VRNet.Tick(this);        // multiplayer VR presence (room-scoped announce + scan)
             try
             {
                 if (VRKoboldKarePlugin.KeyDownAny(KeyCode.Home) ||
@@ -337,6 +418,44 @@ namespace VRKoboldKare
 
             if (!Enabled) return;
 
+            // Desktop hotkeys (headset-off play): the controller actions the
+            // dead WiVRn profile can't deliver, mapped to keys. All key names
+            // are Unity KeyCode strings in the config; logged when they fire.
+            try
+            {
+                var p = Plugin;
+                if (!ReferenceEquals(p, null))
+                {
+                    if (p.cfgScreenshotKey != null &&
+                        VRKoboldKarePlugin.KeyDownAny(ParseKey(p.cfgScreenshotKey.Value, KeyCode.P)))
+                    {
+                        if (Renderer != null) { Renderer.RequestScreenshot(); Log("screenshot queued"); }
+                    }
+                    if (p.cfgCameraCycleKey != null &&
+                        VRKoboldKarePlugin.KeyDownAny(ParseKey(p.cfgCameraCycleKey.Value, KeyCode.B)))
+                    {
+                        CycleCamera();
+                    }
+                    if (p.cfgRadialKey != null &&
+                        VRKoboldKarePlugin.KeyDownAny(ParseKey(p.cfgRadialKey.Value, KeyCode.H)) &&
+                        UI != null)
+                    {
+                        UI.ToggleRadial();
+                    }
+                    if (p.cfgRagdollKey != null &&
+                        VRKoboldKarePlugin.KeyDownAny(ParseKey(p.cfgRagdollKey.Value, KeyCode.K)))
+                    {
+                        ToggleRagdoll();
+                    }
+                    if (p.cfgPrecisionKey != null &&
+                        VRKoboldKarePlugin.KeyDownAny(ParseKey(p.cfgPrecisionKey.Value, KeyCode.J)))
+                    {
+                        TogglePrecisionMode();
+                    }
+                }
+            }
+            catch (System.Exception e) { Log("desktop hotkeys: " + e.Message); }
+
             // Lazy rebinding: VR enabled before the kobold finished spawning
             // misses Grabber/PrecisionGrabber — retry every 2s until found.
             if ((Grabber == null || PGrabber == null) && Time.unscaledTime >= _rebindAt)
@@ -349,7 +468,19 @@ namespace VRKoboldKare
             UpdateHeadVisibility();
             UpdateRagdollCamera();
             TickGhostMode();
+
+            // Pose broadcast (bundle-with-FBT decision): 10Hz unreliable
+            // Photon events carrying head/hand/body world poses, rendered as
+            // markers on other kkvr clients. Presence flags already told
+            // them what to expect.
+            if (Enabled && Time.unscaledTime >= _nextPoseSend)
+            {
+                _nextPoseSend = Time.unscaledTime + 0.1f;
+                VRNet.SendPose(this);
+            }
         }
+
+        private float _nextPoseSend;
 
         // Ragdoll → third person: the game's own camera state machine (her
         // design). While the local player is ragdolled, the orbit spectates
@@ -377,10 +508,90 @@ namespace VRKoboldKare
             catch (Exception) { }
         }
 
+        // ---- desktop hotkey actions (headset-off play) ----
+
+        /// <summary>Unity KeyCode name → KeyCode (config strings; snap keys use
+        /// the same parsing). Unknown names fall back to the default binding.</summary>
+        private static KeyCode ParseKey(string name, KeyCode fallback)
+        {
+            if (string.IsNullOrEmpty(name)) return fallback;
+            KeyCode kc;
+            return System.Enum.TryParse(name, true, out kc) ? kc : fallback;
+        }
+
+        /// <summary>First person → third person → free cam → first person.</summary>
+        internal void CycleCamera()
+        {
+            CameraSwitcher.CameraMode next;
+            var cur = CameraSwitcher.CameraMode.FirstPerson;
+            try
+            {
+                if (CamSwitcher != null && CamSwitcher.GetCameraMode().HasValue)
+                    cur = CamSwitcher.GetCameraMode().Value;
+            }
+            catch (Exception) { }
+            switch (cur)
+            {
+                case CameraSwitcher.CameraMode.FirstPerson: next = CameraSwitcher.CameraMode.ThirdPerson; break;
+                case CameraSwitcher.CameraMode.ThirdPerson: next = CameraSwitcher.CameraMode.FreeCam; break;
+                default: next = CameraSwitcher.CameraMode.FirstPerson; break;
+            }
+            try
+            {
+                if (Cam != null) Cam.SwitchTo(next);   // also updates MirrorEnabled
+                else if (CamSwitcher != null) CamSwitcher.SwitchCamera(next);
+                Log("camera -> " + next);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>Ragdoll toggle (was VRInput.DoRagdoll — now also reachable
+        /// from the desktop hotkey).</summary>
+        internal void ToggleRagdoll()
+        {
+            if (Kobold == null) return;
+            var r = Kobold.GetRagdoller();
+            if (r == null) return;
+            try
+            {
+                if (r.ragdolled) r.PopRagdoll();
+                else r.PushRagdoll();
+                VRXR.Haptic(true, 0.6f, 150);
+            }
+            catch { }
+        }
+
+        /// <summary>Precision-grab (pin) mode toggle (was
+        /// VRInput.TogglePrecisionMode — now also on a desktop hotkey).</summary>
+        internal void TogglePrecisionMode()
+        {
+            bool cur = GetBoolField(Possession, GetFieldInfo("switchedMode"));
+            bool next = !cur;
+            SetBoolField(GetFieldInfo("switchedMode"), next);
+            try
+            {
+                PrecisionGrabber.SetPinVisibility(next);
+                if (PGrabber != null) PGrabber.SetPreviewState(next);
+            }
+            catch { }
+            if (next && Possession != null)
+            {
+                var f = GetFieldInfo("multiGrabSwitchTimer");
+                var def = GetFieldInfo("defaultMultiGrabSwitchFrames");
+                if (f != null && def != null)
+                {
+                    try { f.SetValue(Possession, def.GetValue(Possession)); } catch { }
+                }
+            }
+            Log("precision grab mode " + (next ? "ON" : "OFF"));
+            VRXR.Haptic(true, 0.5f, 100);
+        }
+
         private float _rebindAt;
 
         private void OnApplicationQuit()
         {
+            try { VRNet.Shutdown(); } catch { }
             try { VRXR.Shutdown(); } catch { }
         }
 
@@ -699,7 +910,7 @@ namespace VRKoboldKare
             // grabbing aims. Side offsets put the grab ray off-center (the
             // "can't pick things up" regression).
             Vector3 camPos = HeadToWorld(f.headPos, f.headRot);
-            Quaternion camRot = Quaternion.Euler(0f, YawOffset, 0f) * f.headRot;
+            Quaternion camRot = ViewRotation(f.headRot);
             try
             {
                 var cam = Camera.main;
@@ -780,6 +991,7 @@ namespace VRKoboldKare
             }
             Log("scene loaded: " + scene.name + " — re-binding player references");
             FindPlayer();
+            VRXR.ResetKeyboardHead();   // synthetic head re-anchors to the scene camera
             _offsetCaptured = false;
             _headPrepared = false;   // new body instance; re-prepare
             if (!ReferenceEquals(Plugin, null) && Plugin.cfgHidePlayerBody != null && Plugin.cfgHidePlayerBody.Value)

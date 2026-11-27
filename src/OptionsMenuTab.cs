@@ -65,7 +65,7 @@ namespace VRKoboldKare
         public override void SetValue(float value)
         {
             base.SetValue(value);
-            if (Entry != null) Entry.Value = value;
+            if (Entry != null) { Entry.Value = value; OptionsMenuTab.LogSetting(Entry, value); }
         }
 
         public override void Load()
@@ -99,7 +99,7 @@ namespace VRKoboldKare
         public override void SetValue(int value)
         {
             base.SetValue(value);
-            if (Entry != null) Entry.Value = value;
+            if (Entry != null) { Entry.Value = value; OptionsMenuTab.LogSetting(Entry, value); }
         }
 
         public override void Load() { SetValue(Entry != null ? Entry.Value : 0); }
@@ -127,7 +127,7 @@ namespace VRKoboldKare
         public override void SetValue(int value)
         {
             base.SetValue(value);
-            if (Entry != null) Entry.Value = value;
+            if (Entry != null) { Entry.Value = value; OptionsMenuTab.LogSetting(Entry, value); }
         }
 
         public override void Load() { SetValue(Entry != null ? Entry.Value : 0); }
@@ -158,7 +158,7 @@ namespace VRKoboldKare
         public override void SetValue(int value)
         {
             base.SetValue(value);
-            if (Entry != null) Entry.Value = value >= 1;
+            if (Entry != null) { Entry.Value = value >= 1; OptionsMenuTab.LogSetting(Entry, value >= 1); }
         }
 
         public override void Load() { SetValue(Entry != null && Entry.Value ? 1 : 0); }
@@ -185,7 +185,7 @@ namespace VRKoboldKare
         public override void SetValue(string value)
         {
             base.SetValue(value);
-            if (Entry != null) Entry.Value = value;
+            if (Entry != null) { Entry.Value = value; OptionsMenuTab.LogSetting(Entry, value); }
         }
 
         public override void Load() { SetValue(Entry != null ? Entry.Value ?? "" : ""); }
@@ -203,9 +203,6 @@ namespace VRKoboldKare
     internal static class OptionsMenuTab
     {
         private static VRKoboldKarePlugin Plugin;
-        private static bool _built;
-        private static int _throttle;
-        private static bool _failed;
 
         // One row per exposed key: (section, key, label, sliderMin, sliderMax,
         // forceTextInput, needsRestart). Rows without a slider range render as
@@ -226,7 +223,7 @@ namespace VRKoboldKare
         // then applies live effects like the HUD rescale).
         private static readonly string[][] Tabs =
         {
-            new[] { "KK VR",         "VR.General", "VR.Render" },
+            new[] { "KK VR",         "VR.General", "VR.Render", "VR.DesktopKeys" },
             new[] { "KK VR Motion",  "VR.Locomotion" },
             new[] { "KK VR Grabs",   "VR.Grab" },
             new[] { "KK VR Camera",  "VR.Camera" },
@@ -245,6 +242,13 @@ namespace VRKoboldKare
             new Opt("VR.Render", "EyeScale", "Eye scale", 0.25f, 1f),
             new Opt("VR.Render", "FlipY", "Flip image vertically"),
             new Opt("VR.Render", "HidePlayerBody", "Hide player body (FP)"),
+            new Opt("VR.Render", "DesktopPreview", "Desktop preview window"),
+            // ---- Desktop hotkeys ----
+            new Opt("VR.DesktopKeys", "ScreenshotKey", "Screenshot key", 0, 0, true),
+            new Opt("VR.DesktopKeys", "CameraCycleKey", "Camera cycle key", 0, 0, true),
+            new Opt("VR.DesktopKeys", "RadialKey", "Radial menu key", 0, 0, true),
+            new Opt("VR.DesktopKeys", "RagdollKey", "Ragdoll key", 0, 0, true),
+            new Opt("VR.DesktopKeys", "PrecisionModeKey", "Precision mode key", 0, 0, true),
             // ---- Locomotion ----
             new Opt("VR.Locomotion", "Mode", "Locomotion mode"),
             new Opt("VR.Locomotion", "TeleportArc", "Teleport arc"),
@@ -302,49 +306,280 @@ namespace VRKoboldKare
             try { VRKoboldKarePlugin.Log.LogInfo("VR: " + msg); } catch (Exception) { }
         }
 
-        // THE MOD DOCTOR (menu no-show, ported from KK-LLM-NPC v1.13.1): runs
-        // when the Options screen is actually OPEN (MainMenu.GetCurrentMode is
-        // a public static — ShowMenu proved unreliable to patch), when rects
-        // are laid out for real. Dumps the live layout, flows EVERY modded
-        // button (ours AND KK-LLM-NPC's — both stacked invisibly behind
-        // Graphics) into 78px slots below Multiplayer, disables the panel's
-        // dead layout group, and expands the ButtonPanel downward-only to fit
-        // (boot-time sizeDelta lied; the BG sibling paints the backdrop and
-        // must stretch too). Idempotent — measures live on every open.
-        private static bool _wasOptions;
-        private static FieldInfo _mmInstanceF;
+        // Settings-applied feedback (she couldn't tell whether a value stuck):
+        // every proxy write logs the key + value — the config file, the
+        // SettingChanged event and any hot-reload effects follow from here.
+        internal static void LogSetting(ConfigEntryBase entry, object value)
+        {
+            try
+            {
+                if (entry != null && VRKoboldKarePlugin.Log != null)
+                    VRKoboldKarePlugin.Log.LogInfo("VR: config " + entry.Definition.Section + ":"
+                        + entry.Definition.Key + " set to " + value + " (live)");
+            }
+            catch (Exception) { }
+        }
+
+        // ------------------------------------------------------------------
+        // THE MOD DOCTOR (menu no-show) — v0.4.0 rework after the 2026-11-23
+        // log forensics. Two stacked root causes, both convicted from logs +
+        // prefab YAML:
+        //
+        //   1. The old trigger — MainMenu.GetCurrentMode() ==
+        //   MainMenuMode.Options — NEVER fires: the game doesn't switch modes
+        //   for the options screen (the probe reports 'MainMenu' even while
+        //   options are open — logged once per session for the record).
+        //   KK-LLM-NPC v1.13.1 ships the same dead gate.
+        //
+        //   2. The ButtonPanel SHIPS with an active VerticalLayoutGroup that
+        //   flows ALL children (6 game + every mod-injected tab) — 18 × 78px
+        //   rows overflow the ~475px panel, pushing modded tabs off the bottom
+        //   (the Nov-23 dump's "stacked at -277" was the pre-layout baked
+        //   positions, not the real failure).
+        //
+        // New trigger: the PANEL PROBE that provably works — a menu is open
+        // when its ButtonPanel's game anchor button is active in hierarchy.
+        // Twelve modded tabs then get COMPACT slots (measured growable space,
+        // UiMath, unit-tested) instead of flowing off-screen, and the layout
+        // self-heals against drift while the menu is open.
+        //
+        // Per-instance: the menu lives in DontDestroyOnLoad, but injection is
+        // still marker-gated per ButtonPanel so any future pause-menu clone
+        // gets its own pass.
+        // ------------------------------------------------------------------
+
+        private sealed class TabMarker : MonoBehaviour { }
+
+        private sealed class PanelInfo
+        {
+            internal MainMenu Menu;
+            internal Transform ButtonPanel;
+            internal bool BuildFailed;   // Build() threw 20× — logged, not retried
+            internal int BuildAttempts;
+            internal bool WasOpen;       // open-state edge tracking
+            // Drift sentinel (self-healing while the menu is open): the first
+            // modded button's placement + the panel size. Anything that
+            // re-flows the grid (a re-enabled layout group, another mod's
+            // relayout) gets reverted within one poll tick.
+            internal bool SentinelValid;
+            internal Vector2 SentPos;
+            internal Vector3 SentScale;
+            internal Vector2 SentPanelSize;
+            // Full-size tab list scrolling (18 buttons can't fit the ~475px
+            // viewport — the mouse wheel pans them inside a masked panel).
+            internal float Scroll;
+            internal float MaxScroll;
+            internal readonly Dictionary<RectTransform, Vector2> BasePositions =
+                new Dictionary<RectTransform, Vector2>();
+        }
+
+        private static readonly List<PanelInfo> _panels = new List<PanelInfo>();
+        private static float _nextPanelPoll;
+        private static bool _modeProbeLogged;
+        private static bool _locWaitLogged;
+        private const float ScrollStep = 45f;   // px per wheel notch
 
         private static void PollOpenMenu()
         {
-            bool isOpen;
-            try { isOpen = MainMenu.GetCurrentMode() == MainMenu.MainMenuMode.Options; }
-            catch (Exception) { return; } // boot race: singleton not up yet — retried next tick
-            try
+            HandleScroll();   // every frame — the wheel must feel live
+
+            if (Time.unscaledTime < _nextPanelPoll) return;
+            _nextPanelPoll = Time.unscaledTime + 0.25f;
+
+            // Discover instances. FindObjectsOfType misses inactive roots, so
+            // a pause-menu clone joins the cache on its first activation.
+            foreach (var menu in UnityEngine.Object.FindObjectsOfType<MainMenu>())
             {
-                if (!isOpen) { _wasOptions = false; return; }
-                if (_wasOptions) return; // once per open
-                _wasOptions = true;
-                if (_mmInstanceF == null)
-                    _mmInstanceF = typeof(MainMenu).GetField("instance",
-                        BindingFlags.NonPublic | BindingFlags.Static);
-                var menu = _mmInstanceF != null ? _mmInstanceF.GetValue(null) as MainMenu : null;
-                if (menu == null) { Log("options-dump: MainMenu instance not reachable"); return; }
+                if (menu == null) continue;
+                bool known = false;
+                foreach (var p in _panels)
+                    if (ReferenceEquals(p.Menu, menu)) { known = true; break; }
+                if (known) continue;
+                // Canonical path first (View - Options → Body → ButtonPanel);
+                // a bare-name fallback catches other panel hosts.
+                Transform bp = null;
                 var optionsRoot = FindChild(menu.transform, "View - Options");
-                if (optionsRoot == null) { Log("options-dump: View - Options NOT FOUND"); return; }
-                var body = FindChild(optionsRoot, "Body");
-                var bp = body != null ? FindChild(body, "ButtonPanel") : null;
-                if (bp == null) { Log("options-dump: ButtonPanel NOT FOUND"); return; }
-                try { RelayoutModdedButtons(bp); } catch (Exception re) { Log("options-relayout failed: " + re); }
-                try { FitButtonPanel(bp); } catch (Exception fe) { Log("options-fit failed hard: " + fe); }
+                var body = optionsRoot != null ? FindChild(optionsRoot, "Body") : null;
+                if (body != null) bp = FindChild(body, "ButtonPanel");
+                if (bp == null) bp = FindChild(menu.transform, "ButtonPanel");
+                _panels.Add(new PanelInfo { Menu = menu, ButtonPanel = bp });
             }
-            catch (Exception e)
+            for (int i = _panels.Count - 1; i >= 0; i--)
+                if (_panels[i].Menu == null || _panels[i].ButtonPanel == null)
+                    _panels.RemoveAt(i);   // scene churn destroyed this instance
+
+            foreach (var p in _panels)
             {
-                Log("options-dump failed: " + e);
+                if (p.ButtonPanel == null) continue;
+
+                // Inject once per panel instance (marker-gated). The 0.4.0
+                // session proved Build must WAIT for the localization system:
+                // running it at boot produced empty LocalizedString references,
+                // whose GetLocalizedString() threw "Empty Table Reference"
+                // inside the game's spawner and aborted the settings rows
+                // (her "only shows a label with the text 'Label'").
+                if (p.ButtonPanel.GetComponent<TabMarker>() == null)
+                {
+                    var cfg = !ReferenceEquals(Plugin, null) ? Plugin.cfgOptionsMenuTab : null;
+                    if (cfg != null && !cfg.Value)
+                    {
+                        p.ButtonPanel.gameObject.AddComponent<TabMarker>();   // disabled — claim, don't build
+                    }
+                    else if (!LocalizationReady())
+                    {
+                        if (!_locWaitLogged)
+                        {
+                            _locWaitLogged = true;
+                            Log("deferring tab injection until localization finishes initializing");
+                        }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            bool wasOpen = p.WasOpen;
+                            Build(p.Menu);
+                            p.ButtonPanel.gameObject.AddComponent<TabMarker>();
+                            Log("KK VR tabs injected into '" + p.Menu.gameObject.scene.name + "' menu");
+                            if (wasOpen) { try { ApplyModdedLayout(p); } catch (Exception) { } }
+                        }
+                        catch (Exception e)
+                        {
+                            p.BuildAttempts++;
+                            if (p.BuildAttempts >= 20)
+                            {
+                                p.BuildFailed = true;
+                                Log("tabs injection failed after 20 attempts (" + p.Menu.gameObject.scene.name + "): " + e.Message);
+                            }
+                            else if ((p.BuildAttempts & (p.BuildAttempts - 1)) == 0)   // log attempts 1,2,4,8,16
+                            {
+                                Log("tabs injection deferred (" + p.Menu.gameObject.scene.name + "): " + e.Message);
+                            }
+                        }
+                    }
+                }
+
+                HandleOpenEdge(p);
             }
         }
 
+        private static bool LocalizationReady()
+        {
+            try { return LocalizationSettings.InitializationOperation.IsDone; }
+            catch (Exception) { return true; }   // API shape changed — let Loc() try and fail loudly
+        }
+
+        // Wheel-scroll the full-size tab list while the cursor is over the
+        // ButtonPanel. Runs EVERY frame (the 0.25s poll would feel chunky).
+        // Scrolling only fires over the button column — the settings list on
+        // the right keeps its own ScrollRect wheel handling.
+        private static void HandleScroll()
+        {
+            UnityEngine.InputSystem.Mouse mouse;
+            try { mouse = UnityEngine.InputSystem.Mouse.current; }
+            catch (Exception) { return; }
+            if (mouse == null) return;
+            float dy = mouse.scroll.ReadValue().y;
+            if (Mathf.Abs(dy) < 0.001f) return;
+            Vector2 mp = mouse.position.ReadValue();
+            foreach (var p in _panels)
+            {
+                if (!p.WasOpen || !p.SentinelValid) continue;
+                var rt = p.ButtonPanel as RectTransform;
+                if (rt == null) continue;
+                if (!RectTransformUtility.RectangleContainsScreenPoint(rt, mp, null)) continue;
+                // Units vary by Input System settings — treat any nonzero
+                // delta as one notch step.
+                float next = Mathf.Clamp(p.Scroll + (dy > 0 ? -1f : 1f) * ScrollStep, 0f, p.MaxScroll);
+                if (Mathf.Approximately(next, p.Scroll)) continue;
+                p.Scroll = next;
+                ApplyScroll(p);
+            }
+        }
+
+        private static void ApplyScroll(PanelInfo p)
+        {
+            var rt = p.ButtonPanel as RectTransform;
+            if (rt == null) return;
+            for (int i = 0; i < p.ButtonPanel.childCount; i++)
+            {
+                var c = p.ButtonPanel.GetChild(i) as RectTransform;
+                if (c == null) continue;
+                Vector2 basePos;
+                if (p.BasePositions.TryGetValue(c, out basePos))
+                    c.anchoredPosition = basePos + new Vector2(0f, p.Scroll);
+            }
+            var first = FirstModdedButton(p.ButtonPanel);
+            if (first != null)
+            {
+                p.SentPos = first.anchoredPosition;
+                p.SentScale = first.localScale;
+            }
+            p.SentPanelSize = rt.sizeDelta;
+        }
+
+        private static void HandleOpenEdge(PanelInfo p)
+        {
+            Transform anchor = FindGameAnchor(p.ButtonPanel);
+            bool open = anchor != null && anchor.gameObject.activeInHierarchy;
+            if (open != p.WasOpen)
+            {
+                p.WasOpen = open;
+                if (!open) return;
+
+                // For the record, once: what the old (dead) gate actually
+                // returns while the options screen is visibly open.
+                if (!_modeProbeLogged)
+                {
+                    _modeProbeLogged = true;
+                    try { Log("options open — MainMenu.GetCurrentMode() reports '" + MainMenu.GetCurrentMode() +
+                              "' (the old relayout gate — logged for the record)"); }
+                    catch (Exception e) { Log("options open — MainMenu.GetCurrentMode() threw: " + e.Message); }
+                }
+
+                try
+                {
+                    p.Scroll = 0f;   // each open starts at the top of the list
+                    ApplyModdedLayout(p);
+                }
+                catch (Exception e) { Log("options relayout failed: " + e); }
+                return;
+            }
+
+            // While OPEN: the drift sentinel. Hover must NOT be able to move
+            // the grid — but anything else that re-flows it (a re-enabled
+            // layout group, another mod's pass) is reverted within one poll.
+            if (open && p.SentinelValid && LayoutDrifted(p))
+            {
+                Log("options layout drifted — re-asserting");
+                try { ApplyModdedLayout(p); }
+                catch (Exception e) { Log("options re-assert failed: " + e); }
+            }
+        }
+
+        private static bool LayoutDrifted(PanelInfo p)
+        {
+            var bp = p.ButtonPanel as RectTransform;
+            if (bp == null) return false;
+            var first = FirstModdedButton(p.ButtonPanel);
+            if (first == null) return false;
+            const float eps = 0.5f;
+            if ((first.anchoredPosition - p.SentPos).sqrMagnitude > eps * eps) return true;
+            if ((first.localScale - p.SentScale).sqrMagnitude > eps * eps) return true;
+            if ((bp.sizeDelta - p.SentPanelSize).sqrMagnitude > eps * eps) return true;
+            return false;
+        }
+
+        private static RectTransform FirstModdedButton(Transform bp)
+        {
+            var modded = CollectModdedButtons(bp);
+            if (modded.Count == 0) return null;
+            modded.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
+            return modded[0];
+        }
+
         // The game's six canonical category buttons — everything else in the
-        // ButtonPanel is mod-injected (ours, the VR rig's, future mods').
+        // ButtonPanel is mod-injected (ours, KK-LLM-NPC's, future mods').
         private const float ModSlotHeight = 78f;   // the game's own button grid spacing
 
         private static readonly string[] GameButtonNames =
@@ -353,174 +588,120 @@ namespace VRKoboldKare
             "Button - Graphics", "Button - Analytics", "Button - Multiplayer",
         };
 
-        // RELAYOUT: the ButtonPanel has NO functioning runtime layout group —
-        // clones spawn at the template's position and stack invisibly behind
-        // Graphics. Re-flow every MODDED button (ours AND KK-LLM-NPC's,
-        // name-sorted, deterministic) into 78px slots below the last game
-        // button, then the fit expands the panel downward-only to cover them.
-        private static void RelayoutModdedButtons(Transform bp)
+        private static Transform FindGameAnchor(Transform bp)
         {
-            var rt = bp as RectTransform;
-            if (rt == null) return;
-            var lg = rt.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
-            if (lg != null && lg.enabled)
-            {
-                lg.enabled = false;
-                Log("options-relayout: disabled the panel's VerticalLayoutGroup (it was not laying out at runtime anyway)");
-            }
-            Transform anchor = null;
+            string last = GameButtonNames[GameButtonNames.Length - 1];
+            for (int i = 0; i < bp.childCount; i++)
+                if (bp.GetChild(i).name == last) return bp.GetChild(i);
+            return null;
+        }
+
+        private static List<RectTransform> CollectModdedButtons(Transform bp)
+        {
             var modded = new List<RectTransform>();
             for (int i = 0; i < bp.childCount; i++)
             {
                 var c = bp.GetChild(i);
                 bool game = false;
                 foreach (var g in GameButtonNames) if (c.name == g) { game = true; break; }
-                if (game) { if (c.name == GameButtonNames[GameButtonNames.Length - 1]) anchor = c; continue; }
+                if (game) continue;
                 var crt = c as RectTransform;
                 if (crt != null && c.GetComponent<Button>() != null) modded.Add(crt);
             }
+            return modded;
+        }
+
+        // RELAYOUT (runs on every open edge and after any drift — idempotent):
+        // the ButtonPanel SHIPS with an active VerticalLayoutGroup (spacing 8 +
+        // 70px rows = the game's 78px grid) that flows ALL children — 6 game
+        // buttons + every mod-injected one — straight off the bottom of a
+        // ~475px panel once mods add more than a couple of tabs. THE Nov-23
+        // "invisible tabs" mystery: the clones weren't stacked behind Graphics,
+        // they were flowed below the panel by this group. Disable it and place
+        // manually.
+        //
+        // 0.4.0 playtest verdicts folded in: (a) the half-size compaction is
+        // OUT — full-size tabs at the game's own grid, and the over-long list
+        // WHEEL-SCROLLS inside a RectMask2D-clipped panel instead of shrinking
+        // (the old compaction was also fed by a coordinate-space bug: the grow
+        // limit was measured in pivot-local space while the anchor Y is in
+        // anchored space — apples vs oranges); (b) ButtonMouseOver stays
+        // stripped: its default scale is captured by a Start() that runs
+        // DEFERRED on runtime-injected clones (injected under the inactive
+        // options view), and its OnDisable writes the UNINITIALIZED Vector3.zero
+        // into localScale when the view toggles before Start ever ran — hover
+        // then lerps the button toward 0 and it collapses into its left pivot.
+        // Hover feedback survives via the Button's own color tint.
+        private static void ApplyModdedLayout(PanelInfo p)
+        {
+            Transform bp = p.ButtonPanel;
+            var rt = bp as RectTransform;
+            if (rt == null) { Log("options-relayout: ButtonPanel is not a RectTransform"); return; }
+            var lg = rt.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
+            if (lg != null && lg.enabled)
+            {
+                lg.enabled = false;
+                Log("options-relayout: disabled the panel's VerticalLayoutGroup (it flows modded tabs off the panel bottom)");
+            }
+            Transform anchorT = FindGameAnchor(bp);
+            var anchor = anchorT as RectTransform;
             if (anchor == null) { Log("options-relayout: no game anchor button found — skipped"); return; }
-            if (modded.Count == 0) return;
+
+            var modded = CollectModdedButtons(bp);
+            if (modded.Count == 0) return;   // game-only panel — nothing to do
+
+            int stripped = 0;
+            foreach (var m in modded)
+            {
+                var bmo = m.GetComponent<ButtonMouseOver>();
+                if (bmo != null) { UnityEngine.Object.Destroy(bmo); stripped++; }
+            }
+            if (stripped > 0)
+                Log("options-relayout: stripped hover-scale from " + stripped + " modded buttons (ButtonMouseOver zeroes runtime-injected clones)");
+
+            // The mask gives the wheel scroll a hard clip at the panel's rect.
+            if (rt.GetComponent<UnityEngine.UI.RectMask2D>() == null)
+                rt.gameObject.AddComponent<UnityEngine.UI.RectMask2D>();
+
+            // FULL-SIZE tabs at the game's own grid spacing, below Multiplayer.
             modded.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
-            var art = (RectTransform)anchor;
-            float x = art.anchoredPosition.x;
+            float anchorY = anchor.anchoredPosition.y;
+            float x = anchor.anchoredPosition.x;
             for (int i = 0; i < modded.Count; i++)
             {
-                var m = modded[i];
-                m.anchoredPosition = new Vector2(x, art.anchoredPosition.y - (i + 1) * ModSlotHeight);
-                m.localScale = Vector3.one;
+                modded[i].anchoredPosition = new Vector2(x, anchorY - (i + 1) * ModSlotHeight);
+                modded[i].localScale = Vector3.one;
             }
-            Log("options-relayout: " + modded.Count + " modded buttons flowed below " + anchor.name +
-                " at " + ModSlotHeight.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "px slots");
+
+            // Base positions for EVERY button (game + modded) — the scroll
+            // pans the whole column together.
+            p.BasePositions.Clear();
+            int total = 0;
+            for (int i = 0; i < bp.childCount; i++)
+            {
+                var c = bp.GetChild(i) as RectTransform;
+                if (c == null || c.GetComponent<Button>() == null) continue;
+                p.BasePositions[c] = c.anchoredPosition;
+                total++;
+            }
+
+            // Scroll range: content span vs the panel viewport.
+            p.MaxScroll = Mathf.Max(0f, ModSlotHeight * total - rt.rect.height + 4f);
+            p.Scroll = Mathf.Clamp(p.Scroll, 0f, p.MaxScroll);
+            ApplyScroll(p);
+            p.SentinelValid = true;
+
+            Log("options-relayout: " + modded.Count + " modded tabs at full " + ModSlotHeight.ToString("0") +
+                "px slots (scroll range " + p.MaxScroll.ToString("0") + "px)");
         }
 
-        private static void FitButtonPanel(Transform buttonPanel)
-        {
-            try
-            {
-                var rt = buttonPanel as RectTransform;
-                if (rt == null) return;
-                var lg = buttonPanel.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
-                bool layoutLive = lg != null && lg.enabled;
-                if (layoutLive && lg.childControlHeight && lg.childForceExpandHeight)
-                {
-                    Log("options-fit: layout controls heights — children squeeze automatically, no expansion needed");
-                    return;
-                }
-                float total = 0f;
-                int visible = 0;
-                for (int i = 0; i < buttonPanel.childCount; i++)
-                {
-                    var c = buttonPanel.GetChild(i) as RectTransform;
-                    if (c == null || !c.gameObject.activeSelf) continue;
-                    total += Mathf.Max(0f, c.rect.height);
-                    visible++;
-                }
-                if (layoutLive) total += lg.spacing * Mathf.Max(0, visible - 1)
-                    + lg.padding.top + lg.padding.bottom;
-                float current = rt.rect.height;
-                if (total <= current + 1f)
-                {
-                    Log("options-fit: ButtonPanel " + current.ToString("0.#") + "px fits " + visible
-                        + " buttons (" + total.ToString("0.#") + "px needed)");
-                    return;
-                }
-                float deficit = total - current;
-                rt.sizeDelta = new Vector2(rt.sizeDelta.x, rt.sizeDelta.y + deficit);
-                // DOWNWARD-ONLY GROWTH: a center-pivoted rect grows both ways,
-                // shoving the game buttons up into the Back button. Keep the
-                // TOP edge fixed.
-                rt.anchoredPosition -= new Vector2(0f, (1f - rt.pivot.y) * deficit);
-                // The BG sibling paints the panel's backdrop — stretch it too.
-                var bgTf = buttonPanel.parent != null ? buttonPanel.parent.Find("ButtonPanelBG") : null;
-                var bg = bgTf as RectTransform;
-                if (bg != null && Mathf.Approximately(bg.rect.height, current))
-                {
-                    bg.sizeDelta = new Vector2(bg.sizeDelta.x, bg.sizeDelta.y + deficit);
-                    bg.anchoredPosition -= new Vector2(0f, (1f - bg.pivot.y) * deficit);
-                }
-                Log("options-fit: ButtonPanel expanded " + current.ToString("0.#") + " → " + total.ToString("0.#")
-                    + "px for " + visible + " buttons");
-            }
-            catch (Exception e)
-            {
-                Log("options-fit failed: " + e.Message);
-            }
-        }
-
-        private static bool _openStateDumped;
-
-        // Cheap poll from the persistent manager's update loop: build once the
-        // menu prefab and the SettingsManager singleton exist (a few seconds
-        // after boot — works on the main menu, before any world load).
+        // Cheap poll from the persistent manager's update loop (~0.25s): inject
+        // once per menu instance the prefab exists, and re-fit the grid on
+        // every options-open edge. Covers the main menu before any world load
+        // and in-game pause menus when they are separate instances.
         internal static void Tick()
         {
-            // The mod doctor: runs whether or not the build succeeded — the
-            // open-menu relayout/fit is what makes the tabs visible.
             try { PollOpenMenu(); } catch (Exception) { }
-            if (!_built || _failed)
-            {
-                var cfg = !ReferenceEquals(Plugin, null) ? Plugin.cfgOptionsMenuTab : null;
-                if (cfg != null && !cfg.Value) { _built = true; return; }
-                if (++_throttle % 30 != 0) return; // ~every 0.5s
-                try
-                {
-                    var menu = UnityEngine.Object.FindObjectOfType<MainMenu>();
-                    if (menu == null) return;
-                    Build(menu);
-                    _built = true;
-                    try { VRKoboldKarePlugin.Log.LogInfo("options menu: KK VR tabs injected"); } catch (Exception) { }
-                }
-                catch (Exception e)
-                {
-                    _failed = true; // one honest attempt — the config file remains the surface
-                    try { VRKoboldKarePlugin.Log.LogWarning("options menu injection failed: " + e.Message); } catch (Exception) { }
-                }
-                return;
-            }
-
-            // OPEN-STATE FORENSICS: when the game's own tabs are visible (the
-            // user opened Options), dump every tab button's state — the cloned
-            // KK VR buttons exist in the closed-state dump, so the question is
-            // what differs when the panel is actually shown (active state,
-            // position off-screen, zero size).
-            if (_openStateDumped) return;
-            try
-            {
-                var menu = UnityEngine.Object.FindObjectOfType<MainMenu>();
-                if (menu == null) return;
-                var optionsRoot = FindChild(menu.transform, "View - Options");
-                var body = optionsRoot != null ? FindChild(optionsRoot, "Body") : null;
-                var bp = body != null ? FindChild(body, "ButtonPanel") : null;
-                if (bp == null) return;
-                Transform gp = null;
-                for (int i = 0; i < bp.childCount; i++)
-                    if (bp.GetChild(i).name == "Button - Gameplay") { gp = bp.GetChild(i); break; }
-                if (gp == null || !gp.gameObject.activeInHierarchy) return;   // menu still closed
-
-                _openStateDumped = true;
-                var sb = new System.Text.StringBuilder("options open — ButtonPanel state:");
-                for (int i = 0; i < bp.childCount; i++)
-                {
-                    var b = bp.GetChild(i);
-                    var rt = b.GetComponent<RectTransform>();
-                    sb.Append(" [").Append(b.name)
-                      .Append(" self=").Append(b.gameObject.activeSelf ? 1 : 0)
-                      .Append(" hier=").Append(b.gameObject.activeInHierarchy ? 1 : 0);
-                    if (rt != null)
-                        sb.Append(" pos=(").Append(rt.anchoredPosition.x.ToString("0"))
-                          .Append(",").Append(rt.anchoredPosition.y.ToString("0"))
-                          .Append(") size=(").Append(rt.rect.width.ToString("0"))
-                          .Append("x").Append(rt.rect.height.ToString("0")).Append(")");
-                    sb.Append("]");
-                }
-                VRKoboldKarePlugin.Log.LogInfo(sb.ToString());
-            }
-            catch (Exception ex)
-            {
-                _openStateDumped = true;
-                try { VRKoboldKarePlugin.Log.LogWarning("open-state dump failed: " + ex.Message); } catch (Exception) { }
-            }
         }
 
         private static Transform FindChild(Transform root, string name)
@@ -699,17 +880,35 @@ namespace VRKoboldKare
             }
         }
 
-        // Labels resolve through the game's own localization table (named
-        // "GUID" — what every in-game LocalizeStringEvent references): add a
-        // runtime entry, point the LocalizedString at it. English text in every
-        // available locale. Failure = blank label, tab still functional.
+        // Labels resolve through the game's own localization table. Its
+        // SharedData asset is "NewStringDatabase Shared Data" with
+        // TableCollectionName "StringDatabase" (asset GUID
+        // 7b0547fe1d039e3448e29797d2fc4463) — and the game's own
+        // LocalizeStringEvents reference it in GUID MODE: the serialized
+        // "m_TableCollectionName: GUID:7b0547..." that the 0.3.0 port misread
+        // as a table NAMED "GUID". GetTable("GUID") therefore always returned
+        // null, our Build never succeeded, and the tabs seen in the 0.4.0
+        // playtests were KK-LLM-NPC's.
+        private static readonly System.Guid LocTableGuid =
+            new System.Guid("7b0547fe1d039e3448e29797d2fc4463");
+
         private static LocalizedString Loc(string text)
         {
-            var ls = new LocalizedString();
+            if (!TryLoc(text, out LocalizedString ls))
+                throw new Exception("localization table 'StringDatabase' unavailable (deferred)");
+            return ls;
+        }
+
+        private static bool TryLoc(string text, out LocalizedString ls)
+        {
+            ls = new LocalizedString();
             try
             {
-                var table = LocalizationSettings.StringDatabase.GetTable("GUID");
-                if (table == null || table.SharedData == null) return ls;
+                var op = LocalizationSettings.InitializationOperation;
+                if (!op.IsDone) op.WaitForCompletion();   // main-thread block — once, at Build time
+                TableReference tableRef = LocTableGuid;   // implicit Guid → GUID-mode reference, same as the game's own UI
+                var table = LocalizationSettings.StringDatabase.GetTable(tableRef);
+                if (table == null || table.SharedData == null) return false;
                 var keyEntry = table.SharedData.AddKey();
                 var localeProvider = LocalizationSettings.AvailableLocales;
                 var locales = localeProvider != null ? localeProvider.Locales : null;
@@ -719,17 +918,20 @@ namespace VRKoboldKare
                     {
                         try
                         {
-                            var tbl = LocalizationSettings.StringDatabase.GetTable("GUID", loc);
+                            var tbl = LocalizationSettings.StringDatabase.GetTable(tableRef, loc);
                             if (tbl != null)
                                 tbl.AddEntry(keyEntry.Key, text);
                         }
                         catch (Exception) { }
                     }
                 }
-                ls.SetReference("GUID", keyEntry.Key);
+                ls.SetReference(tableRef, keyEntry.Key);
+                return true;
             }
-            catch (Exception) { }
-            return ls;
+            catch (Exception)
+            {
+                return false;
+            }
         }
     }
 }

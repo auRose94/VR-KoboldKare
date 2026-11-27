@@ -146,6 +146,11 @@ namespace VRKoboldKare
         public const uint HAND_TRACKER_CREATE_INFO_EXT = 1000051001;
         public const uint HAND_JOINTS_LOCATE_INFO_EXT = 1000051002;
         public const uint HAND_JOINT_LOCATIONS_EXT = 1000051003;
+        // XR_FB_body_tracking (values verified against openxr.h 2026-11-27)
+        public const uint BODY_TRACKER_CREATE_INFO_FB = 1000076001;
+        public const uint BODY_JOINTS_LOCATE_INFO_FB = 1000076002;
+        public const uint SYSTEM_BODY_TRACKING_PROPERTIES_FB = 1000076004;
+        public const uint BODY_JOINT_LOCATIONS_FB = 1000076005;
     }
 
     // ---------- enums ----------
@@ -198,6 +203,21 @@ namespace VRKoboldKare
         public const uint HAND_JOINT_THUMB_TIP_EXT = 5;
         public const uint HAND_JOINT_INDEX_TIP_EXT = 10;
         public const uint HAND_JOINT_MIDDLE_TIP_EXT = 15;
+        // XR_FB_body_tracking (values verified against openxr.h 2026-11-27)
+        public const uint TYPE_BODY_TRACKER_CREATE_INFO_FB = 1000076001;
+        public const uint TYPE_BODY_JOINTS_LOCATE_INFO_FB = 1000076002;
+        public const uint TYPE_SYSTEM_BODY_TRACKING_PROPERTIES_FB = 1000076004;
+        public const uint TYPE_BODY_JOINT_LOCATIONS_FB = 1000076005;
+        public const int BODY_JOINT_HIPS_FB = 1;
+        public const int BODY_JOINT_SPINE_LOWER_FB = 2;
+        public const int BODY_JOINT_SPINE_MIDDLE_FB = 3;
+        public const int BODY_JOINT_SPINE_UPPER_FB = 4;
+        public const int BODY_JOINT_CHEST_FB = 5;
+        public const int BODY_JOINT_HEAD_FB = 7;
+        public const int BODY_JOINT_LEFT_HAND_WRIST_FB = 19;
+        public const int BODY_JOINT_RIGHT_HAND_WRIST_FB = 45;
+        public const uint BODY_JOINT_COUNT_FB = 70;
+        public const uint BODY_JOINT_SET_DEFAULT_FB = 0;   // upper body: no knees/feet
     }
 
     internal static class XrExt
@@ -206,6 +226,7 @@ namespace VRKoboldKare
         // case-sensitive end to end.
         public const string D3D11 = "XR_KHR_D3D11_enable";
         public const string HandTracking = "XR_EXT_hand_tracking";
+        public const string BodyTrackingFB = "XR_FB_body_tracking";
     }
 
     // ---------- primitives ----------
@@ -671,6 +692,61 @@ namespace VRKoboldKare
         public IntPtr joints;   // XrHandJointLocationEXT*
     }
 
+    // ---------- XR_FB_body_tracking ----------
+    // Struct sizes verified with gcc against refs/openxr.h (2026-11-27):
+    //   BodyJointLocationFB=40 BodyTrackerCreateInfoFB=24
+    //   BodyJointsLocateInfoFB=32 BodyJointLocationsFB=56
+    //   SystemBodyTrackingPropertiesFB=24
+    // NOTE: the DEFAULT joint set is UPPER BODY ONLY (70 joints: hips →
+    // spine → chest → head → arms/hands) — no knees/feet. Legs stay
+    // procedural in VRBody. Functions resolved via xrGetInstanceProcAddr
+    // (the Khronos loader exports core functions only — see hand tracking).
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct XrBodyJointLocationFB
+    {
+        public ulong locationFlags;   // XrSpaceLocationFlags (64-bit, 1.1 ABI)
+        public XrPosef pose;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct XrSystemBodyTrackingPropertiesFB
+    {
+        public uint type;
+        public IntPtr next;
+        public uint supportsBodyTracking;   // XrBool32
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct XrBodyTrackerCreateInfoFB
+    {
+        public uint type;
+        public IntPtr next;
+        public uint bodyJointSet;   // XrBodyJointSetFB
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct XrBodyJointsLocateInfoFB
+    {
+        public uint type;
+        public IntPtr next;
+        public ulong baseSpace;
+        public long time;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct XrBodyJointLocationsFB
+    {
+        public uint type;
+        public IntPtr next;
+        public uint isActive;               // XrBool32
+        public float confidence;
+        public uint jointCount;
+        public IntPtr jointLocations;       // XrBodyJointLocationFB*
+        public uint skeletonChangedCount;
+        public long time;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct XrInteractionProfileState
     {
@@ -925,6 +1001,22 @@ namespace VRKoboldKare
 
         [UnmanagedFunctionPointer(CallingConvention.Winapi)]
         public delegate int DestroyHandTrackerEXT_t(ulong handTracker);
+
+        // ---------- XR_FB_body_tracking ----------
+        // Resolved via xrGetInstanceProcAddr (see the hand-tracking note —
+        // the Khronos loader does not export extension functions).
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        public delegate int CreateBodyTrackerFB_t(
+            ulong session, ref XrBodyTrackerCreateInfoFB createInfo, out ulong bodyTracker);
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        public delegate int LocateBodyJointsFB_t(
+            ulong bodyTracker, ref XrBodyJointsLocateInfoFB locateInfo,
+            ref XrBodyJointLocationsFB locations);
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        public delegate int DestroyBodyTrackerFB_t(ulong bodyTracker);
 
         [DllImport(Lib, CallingConvention = CC, CharSet = CharSet.Ansi)]
         public static extern int xrResultToString(ulong instance, int value, StringBuilder buffer);

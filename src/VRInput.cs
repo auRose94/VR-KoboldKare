@@ -30,10 +30,30 @@ namespace VRKoboldKare
             _m = m;
         }
 
+        // HARDENING (circuit breaker): the input tick drives every per-frame
+        // mapping — one throwing game-API change must not spam exceptions or
+        // wedge the loop. 30 consecutive throws stops the tick (logged); the
+        // game's own desktop controls keep working untouched.
+        private int _updateStrikes;
+
         private void Update()
         {
             if (_m == null || !_m.Enabled) return;
+            if (_updateStrikes >= 30) return;
+            try { UpdateBody(); _updateStrikes = 0; }
+            catch (Exception e)
+            {
+                _updateStrikes++;
+                if (_updateStrikes == 1 || _updateStrikes % 300 == 0)
+                {
+                    var l = VRKoboldKarePlugin.Log;
+                    if (l != null) l.LogWarning("VRInput tick threw (" + _updateStrikes + " consecutive) — breaker trips at 30: " + e.Message);
+                }
+            }
+        }
 
+        private void UpdateBody()
+        {
             _f = VRXR.Poll();
             _fValid = _f.valid && (_f.headTracked || _f.left.tracked || _f.right.tracked);
 
@@ -89,21 +109,24 @@ namespace VRKoboldKare
             }
             catch { }
 
-            // Desktop fallbacks: mouse yaw + Q/E snap turn (seated play).
+            // Desktop fallbacks: mouse yaw + pitch (OpenXR backend — the
+            // keyboard backend steers its synthetic head itself) + snap keys.
             // Only while the game window is focused — typing in a terminal
             // must not spin the view.
             try
             {
                 if (Application.isFocused)
                 {
+                    bool openxr = VRXR.BackendName == "openxr";
                     var mouse = UnityEngine.InputSystem.Mouse.current;
-                    if (mouse != null)
+                    if (mouse != null && openxr)
                     {
                         var d = mouse.delta.ReadValue();
                         float sens = 0.15f;
                         if (!ReferenceEquals(_m.Plugin, null) && _m.Plugin.cfgMouseSens != null)
                             sens = _m.Plugin.cfgMouseSens.Value;
                         _m.AddYaw(d.x * sens);
+                        _m.AddPitch(d.y * sens);
                     }
                     float snap = 45f;
                     if (!ReferenceEquals(_m.Plugin, null) && _m.Plugin.cfgLocoSnapAngle != null)
@@ -186,14 +209,15 @@ namespace VRKoboldKare
         private void DriveHeadAim()
         {
             if (!_f.headTracked) return;
-            // Aim/body follow the head PLUS the mouse/snap yaw offset layer.
+            // Aim/body follow the head PLUS the mouse yaw/pitch offset layer.
             // The game's own SetPlayerIntendedFacingDirection is buggy (writes
             // quaternion components as degrees — intent collapses to north),
             // so we drive OrbitCamera._aim directly.
-            Quaternion viewRot = Quaternion.Euler(0f, _m.YawOffset, 0f) * _f.headRot;
+            Quaternion viewRot = _m.ViewRotation(_f.headRot);
             float yaw = viewRot.eulerAngles.y;
             float pitch = viewRot.eulerAngles.x;
             if (pitch > 180f) pitch -= 360f;   // Euler x: -180..180
+            pitch = Mathf.Clamp(pitch, -85f, 85f);
             _m.SetOrbitAim(yaw, pitch);
             // Belt & suspenders: the Harmony-fixed public setter writes the
             // same value through a second path (and logs its interception).
@@ -275,7 +299,7 @@ namespace VRKoboldKare
                 }
             }
             catch (Exception) { }
-            _m.Loco.SetMoveInput(move, Quaternion.Euler(0f, _m.YawOffset, 0f) * _f.headRot);
+            _m.Loco.SetMoveInput(move, _m.ViewRotation(_f.headRot));
         }
 
         private bool Edge(bool now, bool prev) { return now && !prev; }
@@ -412,52 +436,12 @@ namespace VRKoboldKare
 
         private void DoRagdoll()
         {
-            if (_m.Kobold == null) return;
-            var r = _m.Kobold.GetRagdoller();
-            if (r == null) return;
-            try
-            {
-                if (r.ragdolled)
-                {
-                    r.PopRagdoll();
-                }
-                else
-                {
-                    r.PushRagdoll();
-                }
-                VRXR.Haptic(true, 0.6f, 150);
-            }
-            catch { }
+            _m.ToggleRagdoll();   // shared with the desktop ragdoll hotkey
         }
 
         private void TogglePrecisionMode()
         {
-            bool cur = VRManager.GetBoolField(_m.Possession, VRManager.GetFieldInfo("switchedMode"));
-            bool next = !cur;
-            VRManager.SetBoolField(VRManager.GetFieldInfo("switchedMode"), next);
-            try
-            {
-                PrecisionGrabber.SetPinVisibility(next);
-                if (_m.PGrabber != null) _m.PGrabber.SetPreviewState(next);
-            }
-            catch { }
-            if (next)
-            {
-                if (_m.Possession != null)
-                {
-                    var f = VRManager.GetFieldInfo("multiGrabSwitchTimer");
-                    var def = VRManager.GetFieldInfo("defaultMultiGrabSwitchFrames");
-                    if (f != null && def != null)
-                    {
-                        try { f.SetValue(_m.Possession, def.GetValue(_m.Possession)); } catch { }
-                    }
-                }
-            }
-            if (!ReferenceEquals(_m.Plugin, null))
-            {
-                _m.Plugin.Logger.LogInfo("VR: precision grab mode " + (next ? "ON" : "OFF"));
-            }
-            VRXR.Haptic(true, 0.5f, 100);
+            _m.TogglePrecisionMode();   // shared with the desktop precision hotkey
         }
 
         internal void ResetGrabState()

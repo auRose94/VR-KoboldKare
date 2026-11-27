@@ -90,6 +90,12 @@ internal static class TestXrAbi
         Size(typeof(XrHandJointsLocateInfoEXT), 32, "XrHandJointsLocateInfoEXT");
         Size(typeof(XrHandJointLocationEXT), 40, "XrHandJointLocationEXT");
         Size(typeof(XrHandJointLocationsEXT), 32, "XrHandJointLocationsEXT");
+        // XR_FB_body_tracking (gcc-verified against openxr.h 2026-11-27)
+        Size(typeof(XrBodyJointLocationFB), 40, "XrBodyJointLocationFB");
+        Size(typeof(XrBodyTrackerCreateInfoFB), 24, "XrBodyTrackerCreateInfoFB");
+        Size(typeof(XrBodyJointsLocateInfoFB), 32, "XrBodyJointsLocateInfoFB");
+        Size(typeof(XrBodyJointLocationsFB), 56, "XrBodyJointLocationsFB");
+        Size(typeof(XrSystemBodyTrackingPropertiesFB), 24, "XrSystemBodyTrackingPropertiesFB");
 
         // ---- structure-type constants (the 55/56/57 + 53 incident) ----
         EqU(XrType.INSTANCE_CREATE_INFO, 3, "XR_TYPE_INSTANCE_CREATE_INFO");
@@ -129,6 +135,10 @@ internal static class TestXrAbi
         EqU(XrType.HAND_TRACKER_CREATE_INFO_EXT, 1000051001, "XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT");
         EqU(XrType.HAND_JOINTS_LOCATE_INFO_EXT, 1000051002, "XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT");
         EqU(XrType.HAND_JOINT_LOCATIONS_EXT, 1000051003, "XR_TYPE_HAND_JOINT_LOCATIONS_EXT");
+        EqU(XrType.BODY_TRACKER_CREATE_INFO_FB, 1000076001, "XR_TYPE_BODY_TRACKER_CREATE_INFO_FB");
+        EqU(XrType.BODY_JOINTS_LOCATE_INFO_FB, 1000076002, "XR_TYPE_BODY_JOINTS_LOCATE_INFO_FB");
+        EqU(XrType.SYSTEM_BODY_TRACKING_PROPERTIES_FB, 1000076004, "XR_TYPE_SYSTEM_BODY_TRACKING_PROPERTIES_FB");
+        EqU(XrType.BODY_JOINT_LOCATIONS_FB, 1000076005, "XR_TYPE_BODY_JOINT_LOCATIONS_FB");
 
         // ---- the 1.1 XrFlags64 discovery: flag fields must be 64-bit ----
         Eq(8, Marshal.SizeOf(typeof(ulong)), "XrFlags64 is 64-bit sanity");

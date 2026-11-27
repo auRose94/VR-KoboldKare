@@ -222,12 +222,21 @@ namespace VRKoboldKare
                 float fit = HudMath.UiFitFraction(HudWidth(), HudHeight(), viewW, viewH);
                 // Panel world size: the canvas rect (authored in UI px for a
                 // 1080p-class screen) scaled to occupy the fit fraction of the
-                // headset's view at the follow distance.
+                // headset's view at the follow distance, times the UI scale
+                // multiplier (VR.UI:Scale — was DEAD config until 0.4.0; <1
+                // shrinks the box, >1 grows it).
                 float hudDistCfg = 3f;
-            try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
-            float dist = HudMath.HudFollowDistance(hudDistCfg);
-                float worldH = 2f * dist * Mathf.Tan(VRRenderer.CurrentVFovDeg * 0.5f * 0.0174533f) * fit;
+                try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgHudDistance != null) hudDistCfg = _manager.Plugin.cfgHudDistance.Value; } catch (Exception) { }
+                float dist = HudMath.HudFollowDistance(hudDistCfg);
+                float uiScale = 1f;
+                try { if (!ReferenceEquals(_manager.Plugin, null) && _manager.Plugin.cfgUIScale != null) uiScale = Mathf.Clamp(_manager.Plugin.cfgUIScale.Value, 0.1f, 4f); } catch (Exception) { }
+                float worldH = 2f * dist * Mathf.Tan(VRRenderer.CurrentVFovDeg * 0.5f * 0.0174533f) * fit * uiScale;
                 c.scaleFactor = worldH / Mathf.Max(1f, rt.rect.height);
+                // Conversion transparency: she couldn't tell whether settings
+                // applied — every canvas conversion logs its numbers.
+                var l = VRKoboldKarePlugin.Log;
+                if (l != null) l.LogInfo(string.Format("VRUI: '{0}' {1:0}x{2:0}px -> {3:0.00}m tall at {4:0.0}m (fit {5:0.00}, uiScale {6:0.00})",
+                    c.name, rt.rect.width, rt.rect.height, worldH, dist, fit, uiScale));
             }
             catch { }
         }
@@ -269,7 +278,7 @@ namespace VRKoboldKare
             if (input == null || !input.FrameValid || !input.Frame.headTracked) return;
 
             Vector3 headPos = _manager.HeadToWorld(input.Frame.headPos, input.Frame.headRot);
-            Quaternion headRot = Quaternion.Euler(0f, _manager.YawOffset, 0f) * input.Frame.headRot;
+            Quaternion headRot = _manager.ViewRotation(input.Frame.headRot);
 
             // Interaction prompt: aim from the head, show the hit object's name.
             UpdatePrompt(headPos, headRot);

@@ -49,9 +49,11 @@ namespace VRKoboldKare
             _xr = VRXR.OpenXR;
             if (_xr == null)
             {
-                Log("stereo renderer: OpenXR backend not active — skipping.");
-                enabled = false;
-                return;
+                // No OpenXR (keyboard dev backend): the renderer STAYS ALIVE in
+                // headless mode — the desktop-preview pipeline (mono RT + the
+                // preview canvas + screenshots) needs no session. Previously
+                // this bailed, leaving headset-off debugging blind.
+                Log("stereo renderer: no OpenXR backend — headless desktop-preview mode.");
             }
 
             string mode = "full";
@@ -78,6 +80,17 @@ namespace VRKoboldKare
         private bool _flipY = true;
         private Texture2D _syncTex;
 
+        // ---- headless desktop-preview state ----
+        private bool _headless;      // mono rig live WITHOUT a rendering session
+        private bool _xrLive;        // session submit path active (flip/copy live)
+        private bool _projOverridden;
+        private UnityEngine.UI.RawImage _previewImage;
+        private Canvas _previewCanvas;
+        private bool _screenshotQueued;
+
+        /// <summary>Queue one PNG of the VR view (hotkey; fires on Update).</summary>
+        internal void RequestScreenshot() { _screenshotQueued = true; }
+
         private void Log(string s)
         {
             if (_m != null && !ReferenceEquals(_m.Plugin, null)) _m.Plugin.Logger.LogInfo("VRRenderer: " + s);
@@ -89,11 +102,49 @@ namespace VRKoboldKare
 
         private void Update()
         {
-            // Wait until the session is live, then build the stereo rig once.
-            if (_rig == null && _xr != null && _xr.SessionRendering)
+            // Screenshots fire between frames — the mono RT then holds the last
+            // completed frame (ReadPixels syncs the GPU anyway).
+            if (_screenshotQueued && _monoRT != null)
             {
-                try { CreateRig(); }
+                _screenshotQueued = false;
+                try { CaptureScreenshot(); }
+                catch (Exception e) { LogWarn("screenshot failed: " + e.Message); }
+            }
+
+            if (_renderMode != "mono")
+            {
+                // Bisect modes unchanged: they only make sense with a session.
+                if (_rig == null && _xr != null && _xr.SessionRendering)
+                {
+                    try { CreateRig(); }
+                    catch (Exception e) { LogWarn("rig creation failed: " + e); enabled = false; }
+                }
+                return;
+            }
+
+            // Window resizes re-fit the preview letterbox (cheap — Unity only
+            // dirties the RawImage when the values actually change).
+            if (_previewImage != null && _monoRT != null && (Time.frameCount & 31) == 0)
+                ApplyPreviewFlip();
+
+            if (_rig == null)
+            {
+                try
+                {
+                    if (_xr != null && _xr.SessionRendering) CreateRig();
+                    else CreateHeadlessMonoRig();   // desktop preview, no session needed
+                }
                 catch (Exception e) { LogWarn("rig creation failed: " + e); enabled = false; }
+                return;
+            }
+
+            // The session came online after the headless rig — upgrade in place
+            // (swapchains + eye-resolution RT; the preview canvas just swaps
+            // the texture it points at).
+            if (_headless && _xr != null && _xr.SessionRendering)
+            {
+                try { UpgradeToSessionRig(); }
+                catch (Exception e) { LogWarn("session rig upgrade failed: " + e); }
             }
         }
 
@@ -120,14 +171,7 @@ namespace VRKoboldKare
             // swapchain (91) vs Unity BGRA32 (87) mismatch forces the shader
             // fallback onto the DXVK-imported texture, which crashed d3d11
             // after a few frames (2026-11-21 playtest).
-            long want =
-                PickFormat(formats, 87) ??   // B8G8R8A8_UNORM  == Unity BGRA32
-                PickFormat(formats, 28) ??   // R8G8B8A8_UNORM  == Unity RGBA32
-                PickFormat(formats, 91) ??   // B8G8R8A8_UNORM_SRGB (fallback)
-                PickFormat(formats, 29) ??   // R8G8B8A8_UNORM_SRGB (fallback)
-                formats[0];
-            TextureFormat unityFmt =
-                (want == 91 || want == 87) ? TextureFormat.BGRA32 : TextureFormat.RGBA32;
+            long want = PickSwapchainFormat(formats, out TextureFormat unityFmt);
             Log("swapchain format DXGI " + want + " -> Unity " + unityFmt);
 
             _rig = new GameObject("VRKK_Rig");
@@ -155,35 +199,7 @@ namespace VRKoboldKare
                 _eyeW[eye] = w;
                 _eyeH[eye] = h;
 
-                _swapchain[eye] = _xr.CreateSwapchain(want, w, h);
-                if (_swapchain[eye] == 0)
-                {
-                    LogWarn("swapchain creation failed for eye " + eye);
-                    return;
-                }
-
-                int imageCount = 3;
-                var images = _xr.GetSwapchainImages(_swapchain[eye], imageCount);
-                if (images == null)
-                {
-                    LogWarn("swapchain image enumeration failed for eye " + eye);
-                    return;
-                }
-                imageCount = images.Length;
-                if (_images == null) { _images = new XrSwapchainImageD3D11KHR[2][]; _wrapped = new Texture2D[2][]; }
-                _images[eye] = images;
-                _wrapped[eye] = new Texture2D[imageCount];
-                for (int i = 0; i < imageCount; i++)
-                {
-                    if (images[i].texture == IntPtr.Zero)
-                    {
-                        LogWarn("swapchain image " + i + " has no texture");
-                        return;
-                    }
-                    _wrapped[eye][i] = Texture2D.CreateExternalTexture(
-                        (int)w, (int)h, unityFmt, false /*mips*/, false /*linear=use as sRGB color*/, images[i].texture);
-                }
-                Log("eye " + eye + ": " + w + "x" + h + ", " + imageCount + " swapchain images");
+                if (!CreateEyeSwapchain(eye, w, h, want, unityFmt)) return;
 
                 if (_renderMode == "mono") continue;   // no extra cameras in mono
 
@@ -247,8 +263,8 @@ namespace VRKoboldKare
                 };
                 _monoRT.Create();
                 _gameCam.targetTexture = _monoRT;
-                Log("mono: game camera '" + _gameCam.name + "' -> RT " + _eyeW[0] + "x" + _eyeH[0] +
-                    " (desktop window goes black while VR is on)");
+                Log("mono: game camera '" + _gameCam.name + "' -> RT " + _eyeW[0] + "x" + _eyeH[0]);
+                CreatePreview();
             }
 
             // Unmanaged layer scratch.
@@ -267,6 +283,271 @@ namespace VRKoboldKare
 
             _xr.ClaimFrames(2000);
             Log("stereo rig live — frames owned by renderer (mode=" + _renderMode + ").");
+        }
+
+        private static long PickSwapchainFormat(long[] formats, out TextureFormat unityFmt)
+        {
+            long want =
+                PickFormat(formats, 87) ??   // B8G8R8A8_UNORM  == Unity BGRA32
+                PickFormat(formats, 28) ??   // R8G8B8A8_UNORM  == Unity RGBA32
+                PickFormat(formats, 91) ??   // B8G8R8A8_UNORM_SRGB (fallback)
+                PickFormat(formats, 29) ??   // R8G8B8A8_UNORM_SRGB (fallback)
+                formats[0];
+            unityFmt = (want == 91 || want == 87) ? TextureFormat.BGRA32 : TextureFormat.RGBA32;
+            return want;
+        }
+
+        // ---------- headless mono rig (desktop preview without a session) ----------
+
+        /// <summary>The VR view on the desktop window with NO OpenXR session:
+        /// the game camera renders into a screen-sized RT (so the VR rig —
+        /// camera pose, world-space HUD, hands — IS what the desktop shows), an
+        /// overlay-canvas RawImage presents it. Overlay canvases never render
+        /// into render textures (VRUI gotcha 14) — which is exactly what we
+        /// want here: the preview reaches the desktop window even though every
+        /// camera targets the RT, and it never leaks into the headset feed.</summary>
+        private void CreateHeadlessMonoRig()
+        {
+            _rig = new GameObject("VRKK_Rig");
+            _gameCam = Camera.main;
+            if (_gameCam == null)
+            {
+                LogWarn("headless mono: no main camera found");
+                return;
+            }
+            int w = Screen.width, h = Screen.height;
+            if (w <= 0 || h <= 0) { w = 1280; h = 720; }
+            // sRGB: this RT goes to the SCREEN (RawImage), not through the
+            // CopyTexture-to-swapchain path — correct color beats exact bits.
+            _monoRT = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.sRGB)
+            {
+                antiAliasing = 1,
+                filterMode = FilterMode.Bilinear,
+            };
+            _monoRT.Create();
+            _gameCam.targetTexture = _monoRT;
+            _headless = true;
+            CurrentViewW = w;
+            CurrentViewH = h;
+            CreatePreview();
+            Log("headless mono rig: game camera -> RT " + w + "x" + h +
+                " — the desktop window IS the VR view now (normal desktop view returns on VR disable)");
+        }
+
+        /// <summary>The WiVRn session came online after the headless rig was
+        /// already running: add swapchains and resize the RT to the eye
+        /// resolution, keeping the preview canvas pointed at the fresh
+        /// texture.</summary>
+        private void UpgradeToSessionRig()
+        {
+            _vcv = _xr.GetViewConfigurationViews();
+            if (_vcv == null || _vcv.Length < 2) { LogWarn("upgrade: no stereo view configuration"); return; }
+            var formats = _xr.GetSwapchainFormats();
+            if (formats == null || formats.Length == 0) { LogWarn("upgrade: no swapchain formats"); return; }
+            long want = PickSwapchainFormat(formats, out TextureFormat unityFmt);
+
+            // The session copy path needs the GPU sync sentinel (ReadPixels
+            // flush between CopyTexture and release — gotcha 8); the headless
+            // rig never made one.
+            if (_syncTex == null)
+                _syncTex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+
+            _eyeW = new uint[2];
+            _eyeH = new uint[2];
+            for (int eye = 0; eye < 2; eye++)
+            {
+                uint w = (uint)(_vcv[eye].recommendedImageRectWidth * Mathf.Clamp(EyeScale(), 0.25f, 1f)) & ~1u;
+                uint h = (uint)(_vcv[eye].recommendedImageRectHeight * Mathf.Clamp(EyeScale(), 0.25f, 1f)) & ~1u;
+                _eyeW[eye] = w;
+                _eyeH[eye] = h;
+                if (!CreateEyeSwapchain(eye, w, h, want, unityFmt)) return;
+            }
+
+            // Recreate the RT at the eye resolution; the session path needs
+            // Linear + the swapchain-matching format for exact-bit CopyTexture.
+            if (_gameCam == null) _gameCam = Camera.main;
+            if (_gameCam == null) { LogWarn("upgrade: no main camera"); return; }
+            if (_monoRT != null) _monoRT.Release();
+            _monoRT = new RenderTexture((int)_eyeW[0], (int)_eyeH[0], 24,
+                (want == 87 || want == 28) ? RenderTextureFormat.BGRA32 : RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear)
+            {
+                antiAliasing = 1,
+                filterMode = FilterMode.Bilinear,
+            };
+            _monoRT.Create();
+            _gameCam.targetTexture = _monoRT;
+            if (_previewImage != null) _previewImage.texture = _monoRT;
+
+            _viewSize = Marshal.SizeOf(typeof(XrCompositionLayerProjectionView));
+            _layerSize = Marshal.SizeOf(typeof(XrCompositionLayerProjection));
+            _viewsPtr = Marshal.AllocHGlobal(_viewSize * 2);
+            _viewsPtrArr = Marshal.AllocHGlobal(IntPtr.Size);
+            _layerPtr = Marshal.AllocHGlobal(_layerSize);
+
+            _headless = false;
+            _xrLive = true;
+            ApplyPreviewFlip();
+            CurrentViewW = _eyeW[0];
+            CurrentViewH = _eyeH[0];
+            _xr.ClaimFrames(2000);
+            Log("session rig live — headless preview upgraded to eye textures " + _eyeW[0] + "x" + _eyeH[0]);
+        }
+
+        /// <summary>Configured eye scale (0.5 default) — session-RT sizing.</summary>
+        private float EyeScale()
+        {
+            try
+            {
+                if (!ReferenceEquals(_m.Plugin, null) && _m.Plugin.cfgEyeScale != null)
+                    return _m.Plugin.cfgEyeScale.Value;
+            }
+            catch { }
+            return 0.5f;
+        }
+
+        private bool CreateEyeSwapchain(int eye, uint w, uint h, long want, TextureFormat unityFmt)
+        {
+            _swapchain[eye] = _xr.CreateSwapchain(want, w, h);
+            if (_swapchain[eye] == 0)
+            {
+                LogWarn("swapchain creation failed for eye " + eye);
+                return false;
+            }
+            int imageCount = 3;
+            var images = _xr.GetSwapchainImages(_swapchain[eye], imageCount);
+            if (images == null)
+            {
+                LogWarn("swapchain image enumeration failed for eye " + eye);
+                return false;
+            }
+            imageCount = images.Length;
+            if (_images == null) { _images = new XrSwapchainImageD3D11KHR[2][]; _wrapped = new Texture2D[2][]; }
+            _images[eye] = images;
+            _wrapped[eye] = new Texture2D[imageCount];
+            for (int i = 0; i < imageCount; i++)
+            {
+                if (images[i].texture == IntPtr.Zero)
+                {
+                    LogWarn("swapchain image " + i + " has no texture");
+                    return false;
+                }
+                _wrapped[eye][i] = Texture2D.CreateExternalTexture(
+                    (int)w, (int)h, unityFmt, false /*mips*/, false /*linear=use as sRGB color*/, images[i].texture);
+            }
+            Log("eye " + eye + ": " + w + "x" + h + ", " + imageCount + " swapchain images");
+            return true;
+        }
+
+        // ---------- desktop preview canvas ----------
+
+        private void CreatePreview()
+        {
+            bool on = true;
+            try
+            {
+                if (!ReferenceEquals(_m.Plugin, null) && _m.Plugin.cfgDesktopPreview != null)
+                    on = _m.Plugin.cfgDesktopPreview.Value;
+            }
+            catch { }
+            if (!on)
+            {
+                Log("desktop preview disabled (VR.Render.DesktopPreview) — window stays black in VR");
+                return;
+            }
+            var go = new GameObject("VRKK_PreviewCanvas");
+            DontDestroyOnLoad(go);
+            go.hideFlags = HideFlags.HideAndDontSave;
+            _previewCanvas = go.AddComponent<Canvas>();
+            _previewCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            // UNDER the game's overlay UI (sorting 0): the main menu and HUD
+            // stay readable on top of the mirrored world while debugging.
+            _previewCanvas.sortingOrder = -50;
+            _previewImage = go.AddComponent<UnityEngine.UI.RawImage>();
+            _previewImage.texture = _monoRT;
+            _previewImage.raycastTarget = false;
+            ApplyPreviewFlip();
+            Log("desktop preview live (overlay canvas, under the game UI)");
+        }
+
+        private void ApplyPreviewFlip()
+        {
+            if (_previewImage == null || _monoRT == null) return;
+            // Session mono renders with a Y-negated projection (the compositor
+            // flips it back) — that RT content is upside down. Headless and
+            // flipY=false render upright.
+            bool flipped = _xrLive && _flipY;
+            _previewImage.uvRect = flipped ? new Rect(0f, 1f, 1f, -1f) : new Rect(0f, 0f, 1f, 1f);
+
+            // Letterbox (RawImage has no preserveAspect in this Unity version):
+            // shrink the rect along the over-long axis so the VR view is never
+            // distorted — the eye RT's aspect rarely matches the window's.
+            var rt = _previewImage.rectTransform;
+            float winAspect = Screen.height > 0 ? (float)Screen.width / Screen.height : 16f / 9f;
+            float texAspect = (float)_monoRT.width / _monoRT.height;
+            if (Mathf.Abs(winAspect - texAspect) < 0.01f)
+            {
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+            }
+            else if (texAspect > winAspect)
+            {
+                float fit = winAspect / texAspect;
+                rt.anchorMin = new Vector2(0f, (1f - fit) * 0.5f);
+                rt.anchorMax = new Vector2(1f, 1f - (1f - fit) * 0.5f);
+            }
+            else
+            {
+                float fit = texAspect / winAspect;
+                rt.anchorMin = new Vector2((1f - fit) * 0.5f, 0f);
+                rt.anchorMax = new Vector2(1f - (1f - fit) * 0.5f, 1f);
+            }
+        }
+
+        // ---------- screenshot ----------
+
+        /// <summary>Write one PNG of the VR view to BepInEx/screenshots/.
+        /// Works headless (the mono RT exists whenever VR is enabled).</summary>
+        private void CaptureScreenshot()
+        {
+            if (_monoRT == null) return;
+            string dir;
+            try { dir = System.IO.Path.Combine(BepInEx.Paths.BepInExRootPath, "screenshots"); }
+            catch { dir = "screenshots"; }
+            try { System.IO.Directory.CreateDirectory(dir); } catch { }
+            string path = System.IO.Path.Combine(dir, UiMath.ScreenshotFileName(DateTime.Now));
+
+            var prev = RenderTexture.active;
+            RenderTexture.active = _monoRT;
+            var tex = new Texture2D(_monoRT.width, _monoRT.height, TextureFormat.RGBA32, false);
+            tex.ReadPixels(new Rect(0, 0, _monoRT.width, _monoRT.height), 0, 0);
+            RenderTexture.active = prev;
+            tex.Apply();
+
+            // Session mono renders Y-negated (the compositor flips it back) —
+            // un-flip the rows so the file matches what the headset shows.
+            if (_xrLive && _flipY)
+            {
+                var px = tex.GetPixels32();
+                int w = tex.width, h = tex.height;
+                var row = new Color32[w];
+                for (int y = 0; y < h / 2; y++)
+                {
+                    int a = y * w, b = (h - 1 - y) * w;
+                    System.Array.Copy(px, a, row, 0, w);
+                    System.Array.Copy(px, b, px, a, w);
+                    System.Array.Copy(row, 0, px, b, w);
+                }
+                tex.SetPixels32(px);
+                tex.Apply();
+            }
+
+            // This game's Unity build stripped EncodeToPNG (verified in the
+            // Managed assemblies) — EncodeToJPG at 95 is the honest encode.
+            System.IO.File.WriteAllBytes(path, UnityEngine.ImageConversion.EncodeToJPG(tex, 95));
+            UnityEngine.Object.Destroy(tex);
+            Log("screenshot saved: " + path);
         }
 
         private XrFovf _monoFov;
@@ -354,7 +635,28 @@ namespace VRKoboldKare
         private int _frameFailLog;
         private int _fovLogged;
 
+        // HARDENING (circuit breaker): a throw inside a URP render callback
+        // can break the WHOLE frame — after 30 consecutive failures the
+        // callback stands down (logged) instead of taking rendering with it.
+        private int _beginStrikes;
+
         private void OnBeginCameraRendering(ScriptableRenderContext ctx, Camera cam)
+        {
+            if (_beginStrikes >= 30) return;
+            try
+            {
+                OnBeginCameraRenderingInner(ctx, cam);
+                _beginStrikes = 0;
+            }
+            catch (Exception e)
+            {
+                _beginStrikes++;
+                if (_beginStrikes == 1 || _beginStrikes % 300 == 0)
+                    LogWarn("begin-callback threw (" + _beginStrikes + " consecutive) — breaker trips at 30: " + e.Message);
+            }
+        }
+
+        private void OnBeginCameraRenderingInner(ScriptableRenderContext ctx, Camera cam)
         {
             if (_beginDebug < 10)
             {
@@ -363,16 +665,42 @@ namespace VRKoboldKare
                     (cam == _eyeCam[0] ? " [eye0]" : cam == _eyeCam[1] ? " [eye1]" :
                      cam == _gameCam ? " [game]" : ""));
             }
-            if (_rig == null || _xr == null) return;
+            if (_rig == null) return;
 
             // Frame-cadence anchor: the game camera in mono mode, eye0 otherwise.
             Camera anchorCam = _renderMode == "mono" ? _gameCam : _eyeCam[0];
             if (anchorCam == null || cam != anchorCam) return;
 
-            if (!_xr.SessionRendering)
+            bool session = _xr != null && _xr.SessionRendering;
+            if (!session)
             {
+                if (_xr != null) _xr.ReleaseFrames();   // idle pump takes over
+
+                // Headless mono: keep the desktop preview live. Snap the game
+                // camera to the rig pose with a FRESH poll (the LateUpdate
+                // mirror patch ran with last frame's poll — this is a frame
+                // crisper, same as the session path below). The game's own
+                // projection stays (upright, no FlipY games headless).
+                if (_headless && _gameCam != null)
+                {
+                    var fresh = VRXR.Poll();
+                    if (fresh.valid && fresh.headTracked && _m.Cam != null && _m.Cam.MirrorEnabled)
+                    {
+                        _gameCam.transform.position = _m.HeadToWorld(fresh.headPos, fresh.headRot);
+                        _gameCam.transform.rotation = _m.ViewRotation(fresh.headRot);
+                    }
+                    // UI-scale compensation reads the vFOV — headless renders
+                    // at the game's FOV, not the headset's.
+                    try { CurrentVFovDeg = _gameCam.fieldOfView; } catch { }
+                    if (_xrLive) { _xrLive = false; ApplyPreviewFlip(); }   // session flapped down
+                    if (_projOverridden)
+                    {
+                        _gameCam.ResetProjectionMatrix();
+                        _projOverridden = false;
+                        try { GL.invertCulling = false; } catch { }
+                    }
+                }
                 _frameBegun = false;
-                _xr.ReleaseFrames();   // idle pump takes over
                 return;
             }
             _xr.ClaimFrames(500);
@@ -413,15 +741,17 @@ namespace VRKoboldKare
                         // animations) or free cam, its own orbit drives —
                         // that's the spectate view she described.
                         _gameCam.transform.position = _m.HeadToWorld(fresh.headPos, fresh.headRot);
-                        _gameCam.transform.rotation = Quaternion.Euler(0f, _m.YawOffset, 0f) * fresh.headRot;
+                        _gameCam.transform.rotation = _m.ViewRotation(fresh.headRot);
                     }
                     // Vertical flip compensation (Unity RT row order vs Vulkan
                     // image row order) + the OpenXR FOV, one matrix; negating
                     // Y mirrors winding so culling must invert.
                     _gameCam.projectionMatrix = FovToProjection(
                         _monoFov, _gameCam.nearClipPlane, _gameCam.farClipPlane, _flipY);
+                    _projOverridden = true;
                     try { GL.invertCulling = _flipY; } catch { }
                 }
+                if (!_xrLive) { _xrLive = true; ApplyPreviewFlip(); }
                 return;
             }
 
@@ -490,7 +820,25 @@ namespace VRKoboldKare
             return m;
         }
 
+        private int _endStrikes;
+
         private void OnEndCameraRendering(ScriptableRenderContext ctx, Camera cam)
+        {
+            if (_endStrikes >= 30) return;
+            try
+            {
+                OnEndCameraRenderingInner(ctx, cam);
+                _endStrikes = 0;
+            }
+            catch (Exception e)
+            {
+                _endStrikes++;
+                if (_endStrikes == 1 || _endStrikes % 300 == 0)
+                    LogWarn("end-callback threw (" + _endStrikes + " consecutive) — breaker trips at 30: " + e.Message);
+            }
+        }
+
+        private void OnEndCameraRenderingInner(ScriptableRenderContext ctx, Camera cam)
         {
             if (_rig == null || _xr == null || _viewsPtr == IntPtr.Zero) return;
 
@@ -632,6 +980,11 @@ namespace VRKoboldKare
             {
                 try { _gameCam.targetTexture = null; _gameCam.ResetProjectionMatrix(); } catch { }
             }
+            try { GL.invertCulling = false; } catch { }
+
+            if (_previewCanvas != null) Destroy(_previewCanvas.gameObject);
+            _previewImage = null;
+            _previewCanvas = null;
 
             foreach (var cam in _eyeCam) if (cam != null) Destroy(cam.gameObject);
             foreach (var rt in _eyeRT) if (rt != null) rt.Release();
