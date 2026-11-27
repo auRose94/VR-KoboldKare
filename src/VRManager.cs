@@ -437,6 +437,17 @@ namespace VRKoboldKare
             OptionsMenuTab.Tick();   // best-effort: injects the options tabs once the menu prefab exists
             VRNet.Tick(this);        // multiplayer VR presence (room-scoped announce + scan)
 
+            // Pre-enable keep-alive poll: the OpenXR backend needs MAIN-THREAD
+            // polls to acquire the D3D11 device, create the session and reach
+            // SYNCHRONIZED — all of which the VR toggle now GATES on. Without
+            // this poll the gate could never open (chicken-and-egg: the old
+            // flow created the session only after VR enabled started the
+            // input poll). VRInput takes over polling once VR is on.
+            if (!Enabled)
+            {
+                try { VRXR.Poll(); } catch (Exception) { }
+            }
+
             // Pending VR enable: retry the bridge and flip VR the moment the
             // OpenXR session genuinely renders (the toggle gates on it — no
             // half-handshakes).

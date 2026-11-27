@@ -5,6 +5,18 @@ All notable changes to VR-KoboldKare are documented here.
 ## Unreleased (0.4.0 batch, 2026-11-27)
 
 ### Fixed — the playtest round
+- **Gate deadlock fixed (found by direct environment probing)**: the toggle
+  gate required a rendering OpenXR session, but session creation needs
+  main-thread polls (D3D11 device acquisition) that only ran AFTER VR
+  enabled — the gate could never open. VRManager now keep-alive-polls while
+  VR is off, so the session comes up on its own and the gate opens when the
+  headset connects. Environment probe results on her machine (host-side,
+  outside Proton): WiVRn was upgraded (r2892→r2897) 18 minutes before the
+  failed session and the systemd service handed over to a
+  dashboard-launched server mid-session; the new build's IPC is healthy
+  host-side, the Quest 3 was connected, and **`XR_FB_body_tracking` +
+  bodyTracking=1 confirmed end-to-end** — the FBT pipeline is armed and the
+  extension does NOT poison instance creation.
 - **The VR toggle refuses a half-handshake** (regression report: toggling VR
   flipped into the keyboard/headless fallback when OpenXR failed — she was
   left in the WiVRn dashboard while desktop VR pretended). `EnableVR` now
